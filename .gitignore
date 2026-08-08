@@ -1,0 +1,8 @@
+dist/
+*.log
+gh-auth.*
+*.user
+*.suo
+.vs/
+bin/
+obj/
