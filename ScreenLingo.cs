@@ -20,8 +20,8 @@ using Windows.Storage.Streams;
 [assembly: System.Reflection.AssemblyTitle("ScreenLingo")]
 [assembly: System.Reflection.AssemblyDescription("Screen area OCR translator for Windows")]
 [assembly: System.Reflection.AssemblyProduct("ScreenLingo")]
-[assembly: System.Reflection.AssemblyVersion("0.4.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.4.1.0")]
+[assembly: System.Reflection.AssemblyVersion("0.4.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.4.2.0")]
 
 namespace ScreenLingo
 {
@@ -138,6 +138,7 @@ namespace ScreenLingo
         private const int WmXButtonDown = 0x020B;
 
         private readonly NotifyIcon trayIcon;
+        private readonly Icon appIcon;
         private readonly HotkeyWindow hotkeyWindow;
         private readonly AppSettings settings;
         private readonly MouseHookProc mouseHookCallback;
@@ -181,8 +182,9 @@ namespace ScreenLingo
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("–í—ã—Ö–æ–¥", null, delegate { Exit(); });
 
+            appIcon = AppIcon.Create();
             trayIcon = new NotifyIcon();
-            trayIcon.Icon = SystemIcons.Information;
+            trayIcon.Icon = appIcon;
             trayIcon.Text = "ScreenLingo ‚Äî –ø–µ—Ä–µ–≤–æ–¥ –æ–±–ª–∞—Å—Ç–∏ —ç–∫—Ä–∞–Ω–∞";
             trayIcon.ContextMenuStrip = menu;
             trayIcon.Visible = true;
@@ -307,6 +309,7 @@ namespace ScreenLingo
             hotkeyWindow.Dispose();
             trayIcon.Visible = false;
             trayIcon.Dispose();
+            appIcon.Dispose();
             ExitThread();
         }
 
@@ -319,355 +322,4 @@ namespace ScreenLingo
                 CreateHandle(new CreateParams());
             }
 
-            protected override void WndProc(ref Message message)
-            {
-                if (message.Msg == WmHotkey && HotkeyPressed != null) HotkeyPressed(message.WParam.ToInt32());
-                base.WndProc(ref message);
-            }
-
-            public void Dispose()
-            {
-                DestroyHandle();
-            }
-        }
-    }
-
-    internal sealed class SelectionForm : Form
-    {
-        private Point start;
-        private Point current;
-        private bool selecting;
-        public Rectangle SelectedScreenRectangle { get; private set; }
-
-        public SelectionForm()
-        {
-            Rectangle virtualScreen = SystemInformation.VirtualScreen;
-            StartPosition = FormStartPosition.Manual;
-            Bounds = virtualScreen;
-            FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            TopMost = true;
-            BackColor = Color.Black;
-            Opacity = 0.28;
-            Cursor = Cursors.Cross;
-            DoubleBuffered = true;
-            KeyPreview = true;
-        }
-
-        protected override void OnKeyDown(KeyEventArgs e)
-        {
-            if (e.KeyCode == Keys.Escape)
-            {
-                DialogResult = DialogResult.Cancel;
-                Close();
-            }
-            base.OnKeyDown(e);
-        }
-
-        protected override void OnMouseDown(MouseEventArgs e)
-        {
-            if (e.Button == MouseButtons.Left)
-            {
-                start = e.Location;
-                current = e.Location;
-                selecting = true;
-                Invalidate();
-            }
-            base.OnMouseDown(e);
-        }
-
-        protected override void OnMouseMove(MouseEventArgs e)
-        {
-            if (selecting)
-            {
-                current = e.Location;
-                Invalidate();
-            }
-            base.OnMouseMove(e);
-        }
-
-        protected override void OnMouseUp(MouseEventArgs e)
-        {
-            if (selecting && e.Button == MouseButtons.Left)
-            {
-                selecting = false;
-                Rectangle local = Normalized(start, e.Location);
-                if (local.Width >= 8 && local.Height >= 8)
-                {
-                    SelectedScreenRectangle = new Rectangle(Left + local.Left, Top + local.Top, local.Width, local.Height);
-                    DialogResult = DialogResult.OK;
-                    Close();
-                }
-                else Invalidate();
-            }
-            base.OnMouseUp(e);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            if (!selecting) return;
-            Rectangle rectangle = Normalized(start, current);
-            using (Brush fill = new SolidBrush(Color.FromArgb(80, 255, 153, 0))) e.Graphics.FillRectangle(fill, rectangle);
-            using (Pen border = new Pen(Color.FromArgb(255, 255, 177, 45), 3)) e.Graphics.DrawRectangle(border, rectangle);
-            string size = rectangle.Width + " √ó " + rectangle.Height;
-            using (Font font = new Font("Segoe UI", 10, FontStyle.Bold))
-            using (Brush text = new SolidBrush(Color.White)) e.Graphics.DrawString(size, font, text, rectangle.Left + 4, Math.Max(2, rectangle.Top - 24));
-        }
-
-        private static Rectangle Normalized(Point a, Point b)
-        {
-            return Rectangle.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
-        }
-    }
-
-    internal sealed class OcrLineInfo
-    {
-        public string Text;
-        public string Translation;
-        public Rectangle Bounds;
-    }
-
-    internal static class OcrService
-    {
-        public static async Task<List<OcrLineInfo>> RecognizeAsync(Bitmap bitmap, string languageTag)
-        {
-            using (MemoryStream memory = new MemoryStream())
-            {
-                bitmap.Save(memory, ImageFormat.Png);
-                memory.Position = 0;
-                using (IRandomAccessStream random = memory.AsRandomAccessStream())
-                {
-                    BitmapDecoder decoder = await BitmapDecoder.CreateAsync(random);
-                    SoftwareBitmap softwareBitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
-                    OcrEngine engine = OcrEngine.TryCreateFromLanguage(new Language(languageTag));
-                    if (engine == null) engine = OcrEngine.TryCreateFromUserProfileLanguages();
-                    if (engine == null) throw new InvalidOperationException("–£—Å—Ç–∞–Ω–æ–≤–∏—Ç–µ —è–∑—ã–∫–æ–≤–æ–π –ø–∞–∫–µ—Ç OCR –¥–ª—è " + languageTag + " –≤ –ø–∞—Ä–∞–º–µ—Ç—Ä–∞—Ö Windows.");
-                    OcrResult result = await engine.RecognizeAsync(softwareBitmap);
-                    List<OcrLineInfo> lines = new List<OcrLineInfo>();
-                    foreach (OcrLine line in result.Lines)
-                    {
-                        if (String.IsNullOrWhiteSpace(line.Text) || line.Words.Count == 0) continue;
-                        double left = line.Words.Min(delegate(OcrWord word) { return word.BoundingRect.X; });
-                        double top = line.Words.Min(delegate(OcrWord word) { return word.BoundingRect.Y; });
-                        double right = line.Words.Max(delegate(OcrWord word) { return word.BoundingRect.X + word.BoundingRect.Width; });
-                        double bottom = line.Words.Max(delegate(OcrWord word) { return word.BoundingRect.Y + word.BoundingRect.Height; });
-                        lines.Add(new OcrLineInfo
-                        {
-                            Text = line.Text.Trim(),
-                            Bounds = Rectangle.FromLTRB((int)Math.Floor(left), (int)Math.Floor(top), (int)Math.Ceiling(right), (int)Math.Ceiling(bottom))
-                        });
-                    }
-                    softwareBitmap.Dispose();
-                    return lines;
-                }
-            }
-        }
-    }
-
-    internal sealed class TranslationService
-    {
-        private static readonly HttpClient Client = CreateClient();
-        private readonly string targetLanguage;
-
-        public TranslationService(string targetLanguage)
-        {
-            this.targetLanguage = targetLanguage;
-        }
-
-        private static HttpClient CreateClient()
-        {
-            HttpClient client = new HttpClient();
-            client.Timeout = TimeSpan.FromSeconds(12);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 ScreenLingo/0.1");
-            return client;
-        }
-
-        public async Task<List<OcrLineInfo>> TranslateAsync(List<OcrLineInfo> lines)
-        {
-            List<OcrLineInfo> useful = lines
-                .Where(delegate(OcrLineInfo line) { return line.Text.Any(Char.IsLetter); })
-                .OrderBy(delegate(OcrLineInfo line) { return line.Bounds.Top; })
-                .ThenBy(delegate(OcrLineInfo line) { return line.Bounds.Left; })
-                .Take(40)
-                .ToList();
-            List<OcrLineInfo> blocks = BuildParagraphs(useful);
-            List<Task> tasks = new List<Task>();
-            foreach (OcrLineInfo block in blocks) tasks.Add(TranslateLineAsync(block));
-            await Task.WhenAll(tasks.ToArray());
-            return blocks.Where(delegate(OcrLineInfo block) { return !String.IsNullOrWhiteSpace(block.Translation); }).ToList();
-        }
-
-        internal static List<OcrLineInfo> BuildParagraphs(List<OcrLineInfo> lines)
-        {
-            List<OcrLineInfo> blocks = new List<OcrLineInfo>();
-            List<OcrLineInfo> current = new List<OcrLineInfo>();
-            Rectangle currentBounds = Rectangle.Empty;
-
-            foreach (OcrLineInfo line in lines)
-            {
-                bool belongs = false;
-                if (current.Count > 0)
-                {
-                    OcrLineInfo previous = current[current.Count - 1];
-                    int verticalGap = line.Bounds.Top - previous.Bounds.Bottom;
-                    int allowedGap = (int)(Math.Max(previous.Bounds.Height, line.Bounds.Height) * 1.35);
-                    bool horizontallyRelated = line.Bounds.Left <= currentBounds.Right + 40 &&
-                                               line.Bounds.Right >= currentBounds.Left - 40;
-                    belongs = verticalGap <= allowedGap && verticalGap >= -Math.Max(previous.Bounds.Height, line.Bounds.Height) && horizontallyRelated;
-                }
-
-                if (!belongs && current.Count > 0)
-                {
-                    blocks.Add(CreateParagraph(current, currentBounds));
-                    current.Clear();
-                    currentBounds = Rectangle.Empty;
-                }
-
-                current.Add(line);
-                currentBounds = currentBounds.IsEmpty ? line.Bounds : Rectangle.Union(currentBounds, line.Bounds);
-            }
-
-            if (current.Count > 0) blocks.Add(CreateParagraph(current, currentBounds));
-            return blocks;
-        }
-
-        private static OcrLineInfo CreateParagraph(List<OcrLineInfo> lines, Rectangle bounds)
-        {
-            return new OcrLineInfo
-            {
-                Text = String.Join(" ", lines.Select(delegate(OcrLineInfo line) { return line.Text.Trim(); }).ToArray()),
-                Bounds = bounds
-            };
-        }
-
-        private async Task TranslateLineAsync(OcrLineInfo line)
-        {
-            string url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=" +
-                         Uri.EscapeDataString(targetLanguage) + "&dt=t&q=" + Uri.EscapeDataString(line.Text);
-            string json = await Client.GetStringAsync(url);
-            line.Translation = ParseResponse(json);
-        }
-
-        internal static string ParseResponse(string json)
-        {
-            JavaScriptSerializer serializer = new JavaScriptSerializer();
-            object[] root = serializer.DeserializeObject(json) as object[];
-            if (root == null || root.Length == 0) return String.Empty;
-            object[] segments = root[0] as object[];
-            if (segments == null) return String.Empty;
-            StringBuilder result = new StringBuilder();
-            foreach (object item in segments)
-            {
-                object[] segment = item as object[];
-                if (segment != null && segment.Length > 0 && segment[0] != null) result.Append(segment[0].ToString());
-            }
-            return result.ToString().Trim();
-        }
-    }
-
-    internal sealed class OverlayForm : Form
-    {
-        private const int WsExTransparent = 0x00000020;
-        private const int WsExToolWindow = 0x00000080;
-        private const int WsExNoActivate = 0x08000000;
-        private readonly Timer closeTimer;
-
-        public OverlayForm(Rectangle screenArea, IEnumerable<OcrLineInfo> lines, Bitmap capturedImage, int seconds)
-        {
-            StartPosition = FormStartPosition.Manual;
-            Bounds = screenArea;
-            FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            TopMost = true;
-            BackColor = Color.Magenta;
-            TransparencyKey = Color.Magenta;
-
-            foreach (OcrLineInfo line in lines) AddTranslation(line, capturedImage);
-
-            closeTimer = new Timer();
-            closeTimer.Interval = seconds * 1000;
-            closeTimer.Tick += delegate { Close(); };
-            closeTimer.Start();
-        }
-
-        protected override bool ShowWithoutActivation { get { return true; } }
-
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                CreateParams parameters = base.CreateParams;
-                parameters.ExStyle |= WsExTransparent | WsExToolWindow | WsExNoActivate;
-                return parameters;
-            }
-        }
-
-        private void AddTranslation(OcrLineInfo line, Bitmap capturedImage)
-        {
-            Rectangle area = Rectangle.Intersect(new Rectangle(Point.Empty, capturedImage.Size), line.Bounds);
-            if (area.Width < 2 || area.Height < 2) return;
-            Color background = SampleBackground(capturedImage, area);
-            double luminance = background.R * 0.299 + background.G * 0.587 + background.B * 0.114;
-            Color foreground = luminance >= 145 ? Color.FromArgb(28, 30, 34) : Color.White;
-
-            int estimatedLines = Math.Max(1, (int)Math.Round((double)line.Bounds.Height / Math.Max(1, Math.Min(line.Bounds.Height, 48))));
-            int sourceLineHeight = Math.Max(16, line.Bounds.Height / estimatedLines);
-            int fontSize = Math.Max(10, Math.Min(42, (int)(sourceLineHeight * 0.72)));
-            Label label = new Label();
-            label.AutoSize = false;
-            label.Text = line.Translation;
-            label.ForeColor = foreground;
-            label.BackColor = background;
-            label.TextAlign = ContentAlignment.TopLeft;
-            label.Padding = new Padding(5, 2, 5, 2);
-            label.Location = new Point(Math.Max(0, line.Bounds.Left - 5), Math.Max(0, line.Bounds.Top - 3));
-            label.Size = new Size(Math.Min(Width - label.Left, line.Bounds.Width + 12), Math.Min(Height - label.Top, line.Bounds.Height + 8));
-
-            Font fittedFont = null;
-            while (fontSize >= 9)
-            {
-                if (fittedFont != null) fittedFont.Dispose();
-                fittedFont = new Font("Segoe UI", fontSize, FontStyle.Regular, GraphicsUnit.Pixel);
-                label.Font = fittedFont;
-                Size measured = TextRenderer.MeasureText(label.Text, fittedFont,
-                    new Size(Math.Max(20, label.ClientSize.Width - label.Padding.Horizontal), 10000),
-                    TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
-                if (measured.Height <= label.ClientSize.Height - label.Padding.Vertical) break;
-                fontSize--;
-            }
-            Controls.Add(label);
-        }
-
-        private static Color SampleBackground(Bitmap image, Rectangle area)
-        {
-            List<int> reds = new List<int>();
-            List<int> greens = new List<int>();
-            List<int> blues = new List<int>();
-            int stepX = Math.Max(2, area.Width / 35);
-            int stepY = Math.Max(2, area.Height / 20);
-
-            for (int y = area.Top; y < area.Bottom; y += stepY)
-            {
-                for (int x = area.Left; x < area.Right; x += stepX)
-                {
-                    Color pixel = image.GetPixel(x, y);
-                    reds.Add(pixel.R);
-                    greens.Add(pixel.G);
-                    blues.Add(pixel.B);
-                }
-            }
-
-            if (reds.Count == 0) return Color.FromArgb(245, 245, 245);
-            reds.Sort(); greens.Sort(); blues.Sort();
-            int middle = reds.Count / 2;
-            return Color.FromArgb(reds[middle], greens[middle], blues[middle]);
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing && closeTimer != null) closeTimer.Dispose();
-            base.Dispose(disposing);
-        }
-    }
-}
+            protected override v◊^º∂âûÀk∫wµÁ]±îπI•ù°–Ä¥Åë•Öµï—ï»∞Å…ïç—Öπù±îπ	Ω——Ω¥Ä¥Åë•Öµï—ï»∞Åë•Öµï—ï»∞Åë•Öµï—ï»∞Ä¿∞Ä‰¿§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ¡Ö—†πëë…å°…ïç—Öπù±îπ1ïô–∞Å…ïç—Öπù±îπ	Ω——Ω¥Ä¥Åë•Öµï—ï»∞Åë•Öµï—ï»∞Åë•Öµï—ï»∞Ä‰¿∞Ä‰¿§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ¡Ö—†π±ΩÕï•ù’…î†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Å¡Ö—†Ï(ÄÄÄÄÄÄÄÅÙ(ÄÄÄÅÙ((ÄÄÄÅ•π—ï…πÖ∞ÅÕïÖ±ïêÅç±ÖÕÃÅMï±ïç—•ΩπΩ…¥ÄËÅΩ…¥(ÄÄÄÅÏ(ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅAΩ•π–ÅÕ—Ö…–Ï(ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅAΩ•π–Åç’……ïπ–Ï(ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅâΩΩ∞ÅÕï±ïç—•πúÏ(ÄÄÄÄÄÄÄÅ¡’â±•åÅIïç—Öπù±îÅMï±ïç—ïëMç…ïïπIïç—Öπù±îÅÏÅùï–ÏÅ¡…•ŸÖ—îÅÕï–ÏÅÙ((ÄÄÄÄÄÄÄÅ¡’â±•åÅMï±ïç—•ΩπΩ…¥†§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅIïç—Öπù±îÅŸ•…—’Ö±Mç…ïï∏ÄÙÅMÂÕ—ïµ%πôΩ…µÖ—•Ω∏πY•…—’Ö±Mç…ïï∏Ï(ÄÄÄÄÄÄÄÄÄÄÄÅM—Ö…—AΩÕ•—•Ω∏ÄÙÅΩ…µM—Ö…—AΩÕ•—•Ω∏π5Öπ’Ö∞Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ	Ω’πëÃÄÙÅŸ•…—’Ö±Mç…ïï∏Ï(ÄÄÄÄÄÄÄÄÄÄÄÅΩ…µ	Ω…ëï…M—Â±îÄÙÅΩ…µ	Ω…ëï…M—Â±îπ9ΩπîÏ(ÄÄÄÄÄÄÄÄÄÄÄÅM°Ω›%πQÖÕ≠âÖ»ÄÙÅôÖ±ÕîÏ(ÄÄÄÄÄÄÄÄÄÄÄÅQΩ¡5ΩÕ–ÄÙÅ—…’îÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ	Öç≠Ω±Ω»ÄÙÅΩ±Ω»π	±Öç¨Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ=¡Öç•—‰ÄÙÄ¿∏»‡Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ’…ÕΩ»ÄÙÅ’…ÕΩ…Ãπ…ΩÕÃÏ(ÄÄÄÄÄÄÄÄÄÄÄÅΩ’â±ï	’ôôï…ïêÄÙÅ—…’îÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ-ïÂA…ïŸ•ï‹ÄÙÅ—…’îÏ(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…Ω—ïç—ïêÅΩŸï……•ëîÅŸΩ•êÅ=π-ïÂΩ›∏°-ïÂŸïπ—…ùÃÅî§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°îπ-ïÂΩëîÄÙÙÅ-ïÂÃπÕçÖ¡î§(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•Ö±ΩùIïÕ’±–ÄÙÅ•Ö±ΩùIïÕ’±–πÖπçï∞Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ±ΩÕî†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÅâÖÕîπ=π-ïÂΩ›∏°î§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…Ω—ïç—ïêÅΩŸï……•ëîÅŸΩ•êÅ=π5Ω’ÕïΩ›∏°5Ω’ÕïŸïπ—…ùÃÅî§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°îπ	’——Ω∏ÄÙÙÅ5Ω’Õï	’——ΩπÃπ1ïô–§(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÕ—Ö…–ÄÙÅîπ1ΩçÖ—•Ω∏Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅç’……ïπ–ÄÙÅîπ1ΩçÖ—•Ω∏Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÕï±ïç—•πúÄÙÅ—…’îÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ%πŸÖ±•ëÖ—î†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÅâÖÕîπ=π5Ω’ÕïΩ›∏°î§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…Ω—ïç—ïêÅΩŸï……•ëîÅŸΩ•êÅ=π5Ω’Õï5ΩŸî°5Ω’ÕïŸïπ—…ùÃÅî§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°Õï±ïç—•πú§(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅç’……ïπ–ÄÙÅîπ1ΩçÖ—•Ω∏Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ%πŸÖ±•ëÖ—î†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÅâÖÕîπ=π5Ω’Õï5ΩŸî°î§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…Ω—ïç—ïêÅΩŸï……•ëîÅŸΩ•êÅ=π5Ω’ÕïU¿°5Ω’ÕïŸïπ—…ùÃÅî§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°Õï±ïç—•πúÄòòÅîπ	’——Ω∏ÄÙÙÅ5Ω’Õï	’——ΩπÃπ1ïô–§(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÕï±ïç—•πúÄÙÅôÖ±ÕîÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅIïç—Öπù±îÅ±ΩçÖ∞ÄÙÅ9Ω…µÖ±•Èïê°Õ—Ö…–∞Åîπ1ΩçÖ—•Ω∏§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°±ΩçÖ∞π]•ë—†Ä¯ÙÄ‡ÄòòÅ±ΩçÖ∞π!ï•ù°–Ä¯ÙÄ‡§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅMï±ïç—ïëMç…ïïπIïç—Öπù±îÄÙÅπï‹ÅIïç—Öπù±î°1ïô–Ä¨Å±ΩçÖ∞π1ïô–∞ÅQΩ¿Ä¨Å±ΩçÖ∞πQΩ¿∞Å±ΩçÖ∞π]•ë—†∞Å±ΩçÖ∞π!ï•ù°–§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•Ö±ΩùIïÕ’±–ÄÙÅ•Ö±ΩùIïÕ’±–π=,Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ±ΩÕî†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅï±ÕîÅ%πŸÖ±•ëÖ—î†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÅâÖÕîπ=π5Ω’ÕïU¿°î§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…Ω—ïç—ïêÅΩŸï……•ëîÅŸΩ•êÅ=πAÖ•π–°AÖ•π—Ÿïπ—…ùÃÅî§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅâÖÕîπ=πAÖ•π–°î§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ†ÖÕï±ïç—•πú§Å…ï—’…∏Ï(ÄÄÄÄÄÄÄÄÄÄÄÅIïç—Öπù±îÅ…ïç—Öπù±îÄÙÅ9Ω…µÖ±•Èïê°Õ—Ö…–∞Åç’……ïπ–§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ’Õ•πúÄ°	…’Õ†Åô•±∞ÄÙÅπï‹ÅMΩ±•ë	…’Õ†°Ω±Ω»π…Ωµ…ùà†‡¿∞Ä»‘‘∞Äƒ‘Ã∞Ä¿§§§Åîπ…Ö¡°•çÃπ•±±Iïç—Öπù±î°ô•±∞∞Å…ïç—Öπù±î§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ’Õ•πúÄ°Aï∏ÅâΩ…ëï»ÄÙÅπï‹ÅAï∏°Ω±Ω»π…Ωµ…ùà†»‘‘∞Ä»‘‘∞Äƒ‹‹∞Ä–‘§∞ÄÃ§§Åîπ…Ö¡°•çÃπ…Ö›Iïç—Öπù±î°âΩ…ëï»∞Å…ïç—Öπù±î§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÕ—…•πúÅÕ•ÈîÄÙÅ…ïç—Öπù±îπ]•ë—†Ä¨ÄàÉ\ÄàÄ¨Å…ïç—Öπù±îπ!ï•ù°–Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ’Õ•πúÄ°Ωπ–ÅôΩπ–ÄÙÅπï‹ÅΩπ–†âMïùΩîÅU$à∞Äƒ¿∞ÅΩπ—M—Â±îπ	Ω±ê§§(ÄÄÄÄÄÄÄÄÄÄÄÅ’Õ•πúÄ°	…’Õ†Å—ï·–ÄÙÅπï‹ÅMΩ±•ë	…’Õ†°Ω±Ω»π]°•—î§§Åîπ…Ö¡°•çÃπ…Ö›M—…•πú°Õ•Èî∞ÅôΩπ–∞Å—ï·–∞Å…ïç—Öπù±îπ1ïô–Ä¨Ä–∞Å5Ö—†π5Ö‡†»∞Å…ïç—Öπù±îπQΩ¿Ä¥Ä»–§§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅÕ—Ö—•åÅIïç—Öπù±îÅ9Ω…µÖ±•Èïê°AΩ•π–ÅÑ∞ÅAΩ•π–Åà§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏ÅIïç—Öπù±îπ…Ωµ1QI°5Ö—†π5•∏°Ñπ`∞Åàπ`§∞Å5Ö—†π5•∏°Ñπd∞Åàπd§∞Å5Ö—†π5Ö‡°Ñπ`∞Åàπ`§∞Å5Ö—†π5Ö‡°Ñπd∞Åàπd§§Ï(ÄÄÄÄÄÄÄÅÙ(ÄÄÄÅÙ((ÄÄÄÅ•π—ï…πÖ∞ÅÕïÖ±ïêÅç±ÖÕÃÅ=ç…1•πï%πôº(ÄÄÄÅÏ(ÄÄÄÄÄÄÄÅ¡’â±•åÅÕ—…•πúÅQï·–Ï(ÄÄÄÄÄÄÄÅ¡’â±•åÅÕ—…•πúÅQ…ÖπÕ±Ö—•Ω∏Ï(ÄÄÄÄÄÄÄÅ¡’â±•åÅIïç—Öπù±îÅ	Ω’πëÃÏ(ÄÄÄÅÙ((ÄÄÄÅ•π—ï…πÖ∞ÅÕ—Ö—•åÅç±ÖÕÃÅ=ç…Mï…Ÿ•çî(ÄÄÄÅÏ(ÄÄÄÄÄÄÄÅ¡’â±•åÅÕ—Ö—•åÅÖÕÂπåÅQÖÕ¨Ò1•Õ–Ò=ç…1•πï%πôº¯¯ÅIïçΩùπ•ÈïÕÂπå°	•—µÖ¿Åâ•—µÖ¿∞ÅÕ—…•πúÅ±Öπù’ÖùïQÖú§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ’Õ•πúÄ°5ïµΩ…ÂM—…ïÖ¥ÅµïµΩ…‰ÄÙÅπï‹Å5ïµΩ…ÂM—…ïÖ¥†§§(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅâ•—µÖ¿πMÖŸî°µïµΩ…‰∞Å%µÖùïΩ…µÖ–πAπú§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅµïµΩ…‰πAΩÕ•—•Ω∏ÄÙÄ¿Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ’Õ•πúÄ°%IÖπëΩµççïÕÕM—…ïÖ¥Å…ÖπëΩ¥ÄÙÅµïµΩ…‰πÕIÖπëΩµççïÕÕM—…ïÖ¥†§§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ	•—µÖ¡ïçΩëï»ÅëïçΩëï»ÄÙÅÖ›Ö•–Å	•—µÖ¡ïçΩëï»π…ïÖ—ïÕÂπå°…ÖπëΩ¥§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅMΩô—›Ö…ï	•—µÖ¿ÅÕΩô—›Ö…ï	•—µÖ¿ÄÙÅÖ›Ö•–ÅëïçΩëï»πï—MΩô—›Ö…ï	•—µÖ¡ÕÂπå°	•—µÖ¡A•·ï±Ω…µÖ–π	ù…Ñ‡∞Å	•—µÖ¡±¡°Ö5ΩëîπA…ïµ’±—•¡±•ïê§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ=ç…πù•πîÅïπù•πîÄÙÅ=ç…πù•πîπQ…Â…ïÖ—ï…Ωµ1Öπù’Öùî°πï‹Å1Öπù’Öùî°±Öπù’ÖùïQÖú§§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°ïπù•πîÄÙÙÅπ’±∞§Åïπù•πîÄÙÅ=ç…πù•πîπQ…Â…ïÖ—ï…ΩµUÕï…A…Ωô•±ï1Öπù’ÖùïÃ†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°ïπù•πîÄÙÙÅπ’±∞§Å—°…Ω‹Åπï‹Å%πŸÖ±•ë=¡ï…Ö—•Ωπ·çï¡—•Ω∏†ãBèFFB√B˜B˚BÀB„FB‘ÉF?BﬂF/BÎB˚BÀB˚B‰ÉBˇB√BÎB◊FÅ=HÉB”BÔF<ÄàÄ¨Å±Öπù’ÖùïQÖúÄ¨ÄàÉB»ÉBˇB√FB√BÛB◊FFB√FÅ]•πëΩ›Ã∏à§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ=ç…IïÕ’±–Å…ïÕ’±–ÄÙÅÖ›Ö•–Åïπù•πîπIïçΩùπ•ÈïÕÂπå°ÕΩô—›Ö…ï	•—µÖ¿§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ1•Õ–Ò=ç…1•πï%πôº¯Å±•πïÃÄÙÅπï‹Å1•Õ–Ò=ç…1•πï%πôº¯†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅôΩ…ïÖç†Ä°=ç…1•πîÅ±•πîÅ•∏Å…ïÕ’±–π1•πïÃ§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°M—…•πúπ%Õ9’±±=…]°•—ïM¡Öçî°±•πîπQï·–§ÅÒÅ±•πîπ]Ω…ëÃπΩ’π–ÄÙÙÄ¿§ÅçΩπ—•π’îÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅëΩ’â±îÅ±ïô–ÄÙÅ±•πîπ]Ω…ëÃπ5•∏°ëï±ïùÖ—î°=ç…]Ω…êÅ›Ω…ê§ÅÏÅ…ï—’…∏Å›Ω…êπ	Ω’πë•πùIïç–π`ÏÅÙ§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅëΩ’â±îÅ—Ω¿ÄÙÅ±•πîπ]Ω…ëÃπ5•∏°ëï±ïùÖ—î°=ç…]Ω…êÅ›Ω…ê§ÅÏÅ…ï—’…∏Å›Ω…êπ	Ω’πë•πùIïç–πdÏÅÙ§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅëΩ’â±îÅ…•ù°–ÄÙÅ±•πîπ]Ω…ëÃπ5Ö‡°ëï±ïùÖ—î°=ç…]Ω…êÅ›Ω…ê§ÅÏÅ…ï—’…∏Å›Ω…êπ	Ω’πë•πùIïç–π`Ä¨Å›Ω…êπ	Ω’πë•πùIïç–π]•ë—†ÏÅÙ§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅëΩ’â±îÅâΩ——Ω¥ÄÙÅ±•πîπ]Ω…ëÃπ5Ö‡°ëï±ïùÖ—î°=ç…]Ω…êÅ›Ω…ê§ÅÏÅ…ï—’…∏Å›Ω…êπ	Ω’πë•πùIïç–πdÄ¨Å›Ω…êπ	Ω’πë•πùIïç–π!ï•ù°–ÏÅÙ§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ±•πïÃπëê°πï‹Å=ç…1•πï%πôº(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅQï·–ÄÙÅ±•πîπQï·–πQ…•¥†§∞(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ	Ω’πëÃÄÙÅIïç—Öπù±îπ…Ωµ1QI†°•π–•5Ö—†π±ΩΩ»°±ïô–§∞Ä°•π–•5Ö—†π±ΩΩ»°—Ω¿§∞Ä°•π–•5Ö—†πï•±•πú°…•ù°–§∞Ä°•π–•5Ö—†πï•±•πú°âΩ——Ω¥§§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÙ§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÕΩô—›Ö…ï	•—µÖ¿π•Õ¡ΩÕî†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Å±•πïÃÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÅÙ(ÄÄÄÅÙ((ÄÄÄÅ•π—ï…πÖ∞ÅÕïÖ±ïêÅç±ÖÕÃÅQ…ÖπÕ±Ö—•ΩπMï…Ÿ•çî(ÄÄÄÅÏ(ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅÕ—Ö—•åÅ…ïÖëΩπ±‰Å!——¡±•ïπ–Å±•ïπ–ÄÙÅ…ïÖ—ï±•ïπ–†§Ï(ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅ…ïÖëΩπ±‰ÅÕ—…•πúÅ—Ö…ùï—1Öπù’ÖùîÏ((ÄÄÄÄÄÄÄÅ¡’â±•åÅQ…ÖπÕ±Ö—•ΩπMï…Ÿ•çî°Õ—…•πúÅ—Ö…ùï—1Öπù’Öùî§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ—°•Ãπ—Ö…ùï—1Öπù’ÖùîÄÙÅ—Ö…ùï—1Öπù’ÖùîÏ(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅÕ—Ö—•åÅ!——¡±•ïπ–Å…ïÖ—ï±•ïπ–†§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ!——¡±•ïπ–Åç±•ïπ–ÄÙÅπï‹Å!——¡±•ïπ–†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅç±•ïπ–πQ•µïΩ’–ÄÙÅQ•µïM¡Ö∏π…ΩµMïçΩπëÃ†ƒ»§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅç±•ïπ–πïôÖ’±—Iï≈’ïÕ—!ïÖëï…ÃπUÕï…ùïπ–πAÖ…Õïëê†â5ΩÈ•±±Ñº‘∏¿ÅMç…ïïπ1•πùºº¿∏ƒà§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Åç±•ïπ–Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡’â±•åÅÖÕÂπåÅQÖÕ¨Ò1•Õ–Ò=ç…1•πï%πôº¯¯ÅQ…ÖπÕ±Ö—ïÕÂπå°1•Õ–Ò=ç…1•πï%πôº¯Å±•πïÃ§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ1•Õ–Ò=ç…1•πï%πôº¯Å’Õïô’∞ÄÙÅ±•πïÃ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄπ]°ï…î°ëï±ïùÖ—î°=ç…1•πï%πôºÅ±•πî§ÅÏÅ…ï—’…∏Å±•πîπQï·–ππ‰°°Ö»π%Õ1ï——ï»§ÏÅÙ§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄπ=…ëï…	‰°ëï±ïùÖ—î°=ç…1•πï%πôºÅ±•πî§ÅÏÅ…ï—’…∏Å±•πîπ	Ω’πëÃπQΩ¿ÏÅÙ§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄπQ°ïπ	‰°ëï±ïùÖ—î°=ç…1•πï%πôºÅ±•πî§ÅÏÅ…ï—’…∏Å±•πîπ	Ω’πëÃπ1ïô–ÏÅÙ§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄπQÖ≠î†–¿§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄπQΩ1•Õ–†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ1•Õ–Ò=ç…1•πï%πôº¯Åâ±Ωç≠ÃÄÙÅ	’•±ëAÖ…Öù…Ö¡°Ã°’Õïô’∞§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ1•Õ–ÒQÖÕ¨¯Å—ÖÕ≠ÃÄÙÅπï‹Å1•Õ–ÒQÖÕ¨¯†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅôΩ…ïÖç†Ä°=ç…1•πï%πôºÅâ±Ωç¨Å•∏Åâ±Ωç≠Ã§Å—ÖÕ≠Ãπëê°Q…ÖπÕ±Ö—ï1•πïÕÂπå°â±Ωç¨§§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÖ›Ö•–ÅQÖÕ¨π]°ïπ±∞°—ÖÕ≠ÃπQΩ……Ö‰†§§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Åâ±Ωç≠Ãπ]°ï…î°ëï±ïùÖ—î°=ç…1•πï%πôºÅâ±Ωç¨§ÅÏÅ…ï—’…∏ÄÖM—…•πúπ%Õ9’±±=…]°•—ïM¡Öçî°â±Ωç¨πQ…ÖπÕ±Ö—•Ω∏§ÏÅÙ§πQΩ1•Õ–†§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ•π—ï…πÖ∞ÅÕ—Ö—•åÅ1•Õ–Ò=ç…1•πï%πôº¯Å	’•±ëAÖ…Öù…Ö¡°Ã°1•Õ–Ò=ç…1•πï%πôº¯Å±•πïÃ§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ1•Õ–Ò=ç…1•πï%πôº¯Åâ±Ωç≠ÃÄÙÅπï‹Å1•Õ–Ò=ç…1•πï%πôº¯†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ1•Õ–Ò=ç…1•πï%πôº¯Åç’……ïπ–ÄÙÅπï‹Å1•Õ–Ò=ç…1•πï%πôº¯†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅIïç—Öπù±îÅç’……ïπ—	Ω’πëÃÄÙÅIïç—Öπù±îπµ¡—‰Ï((ÄÄÄÄÄÄÄÄÄÄÄÅôΩ…ïÖç†Ä°=ç…1•πï%πôºÅ±•πîÅ•∏Å±•πïÃ§(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅâΩΩ∞Åâï±ΩπùÃÄÙÅôÖ±ÕîÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°ç’……ïπ–πΩ’π–Ä¯Ä¿§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ=ç…1•πï%πôºÅ¡…ïŸ•Ω’ÃÄÙÅç’……ïπ—mç’……ïπ–πΩ’π–Ä¥Ä≈tÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•π–ÅŸï…—•çÖ±Ö¿ÄÙÅ±•πîπ	Ω’πëÃπQΩ¿Ä¥Å¡…ïŸ•Ω’Ãπ	Ω’πëÃπ	Ω——Ω¥Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•π–ÅÖ±±Ω›ïëÖ¿ÄÙÄ°•π–§°5Ö—†π5Ö‡°¡…ïŸ•Ω’Ãπ	Ω’πëÃπ!ï•ù°–∞Å±•πîπ	Ω’πëÃπ!ï•ù°–§Ä®Äƒ∏Ã‘§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅâΩΩ∞Å°Ω…•ÈΩπ—Ö±±ÂIï±Ö—ïêÄÙÅ±•πîπ	Ω’πëÃπ1ïô–ÄÙÅç’……ïπ—	Ω’πëÃπI•ù°–Ä¨Ä–¿Äòò(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ±•πîπ	Ω’πëÃπI•ù°–Ä¯ÙÅç’……ïπ—	Ω’πëÃπ1ïô–Ä¥Ä–¿Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅâï±ΩπùÃÄÙÅŸï…—•çÖ±Ö¿ÄÙÅÖ±±Ω›ïëÖ¿ÄòòÅŸï…—•çÖ±Ö¿Ä¯ÙÄµ5Ö—†π5Ö‡°¡…ïŸ•Ω’Ãπ	Ω’πëÃπ!ï•ù°–∞Å±•πîπ	Ω’πëÃπ!ï•ù°–§ÄòòÅ°Ω…•ÈΩπ—Ö±±ÂIï±Ö—ïêÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ†Öâï±ΩπùÃÄòòÅç’……ïπ–πΩ’π–Ä¯Ä¿§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅâ±Ωç≠Ãπëê°…ïÖ—ïAÖ…Öù…Ö¡†°ç’……ïπ–∞Åç’……ïπ—	Ω’πëÃ§§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅç’……ïπ–π±ïÖ»†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅç’……ïπ—	Ω’πëÃÄÙÅIïç—Öπù±îπµ¡—‰Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅç’……ïπ–πëê°±•πî§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅç’……ïπ—	Ω’πëÃÄÙÅç’……ïπ—	Ω’πëÃπ%Õµ¡—‰Ä¸Å±•πîπ	Ω’πëÃÄËÅIïç—Öπù±îπUπ•Ω∏°ç’……ïπ—	Ω’πëÃ∞Å±•πîπ	Ω’πëÃ§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°ç’……ïπ–πΩ’π–Ä¯Ä¿§Åâ±Ωç≠Ãπëê°…ïÖ—ïAÖ…Öù…Ö¡†°ç’……ïπ–∞Åç’……ïπ—	Ω’πëÃ§§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Åâ±Ωç≠ÃÏ(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅÕ—Ö—•åÅ=ç…1•πï%πôºÅ…ïÖ—ïAÖ…Öù…Ö¡†°1•Õ–Ò=ç…1•πï%πôº¯Å±•πïÃ∞ÅIïç—Öπù±îÅâΩ’πëÃ§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Åπï‹Å=ç…1•πï%πôº(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅQï·–ÄÙÅM—…•πúπ)Ω•∏†àÄà∞Å±•πïÃπMï±ïç–°ëï±ïùÖ—î°=ç…1•πï%πôºÅ±•πî§ÅÏÅ…ï—’…∏Å±•πîπQï·–πQ…•¥†§ÏÅÙ§πQΩ……Ö‰†§§∞(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ	Ω’πëÃÄÙÅâΩ’πëÃ(ÄÄÄÄÄÄÄÄÄÄÄÅÙÏ(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅÖÕÂπåÅQÖÕ¨ÅQ…ÖπÕ±Ö—ï1•πïÕÂπå°=ç…1•πï%πôºÅ±•πî§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅÕ—…•πúÅ’…∞ÄÙÄâ°——¡ÃËºΩ—…ÖπÕ±Ö—îπùΩΩù±ïÖ¡•ÃπçΩ¥Ω—…ÖπÕ±Ö—ï}ÑΩÕ•πù±î˝ç±•ïπ–ıù—‡ôÕ∞ıÖ’—ºô—∞ÙàÄ¨(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅU…§πÕçÖ¡ïÖ—ÖM—…•πú°—Ö…ùï—1Öπù’Öùî§Ä¨Äàôë–ı–ôƒÙàÄ¨ÅU…§πÕçÖ¡ïÖ—ÖM—…•πú°±•πîπQï·–§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÕ—…•πúÅ©ÕΩ∏ÄÙÅÖ›Ö•–Å±•ïπ–πï—M—…•πùÕÂπå°’…∞§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ±•πîπQ…ÖπÕ±Ö—•Ω∏ÄÙÅAÖ…ÕïIïÕ¡ΩπÕî°©ÕΩ∏§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ•π—ï…πÖ∞ÅÕ—Ö—•åÅÕ—…•πúÅAÖ…ÕïIïÕ¡ΩπÕî°Õ—…•πúÅ©ÕΩ∏§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ)ÖŸÖMç…•¡—Mï…•Ö±•Èï»ÅÕï…•Ö±•Èï»ÄÙÅπï‹Å)ÖŸÖMç…•¡—Mï…•Ö±•Èï»†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅΩâ©ïç—mtÅ…ΩΩ–ÄÙÅÕï…•Ö±•Èï»πïÕï…•Ö±•Èï=â©ïç–°©ÕΩ∏§ÅÖÃÅΩâ©ïç—mtÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°…ΩΩ–ÄÙÙÅπ’±∞ÅÒÅ…ΩΩ–π1ïπù—†ÄÙÙÄ¿§Å…ï—’…∏ÅM—…•πúπµ¡—‰Ï(ÄÄÄÄÄÄÄÄÄÄÄÅΩâ©ïç—mtÅÕïùµïπ—ÃÄÙÅ…ΩΩ—l¡tÅÖÃÅΩâ©ïç—mtÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°Õïùµïπ—ÃÄÙÙÅπ’±∞§Å…ï—’…∏ÅM—…•πúπµ¡—‰Ï(ÄÄÄÄÄÄÄÄÄÄÄÅM—…•πù	’•±ëï»Å…ïÕ’±–ÄÙÅπï‹ÅM—…•πù	’•±ëï»†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅôΩ…ïÖç†Ä°Ωâ©ïç–Å•—ï¥Å•∏ÅÕïùµïπ—Ã§(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅΩâ©ïç—mtÅÕïùµïπ–ÄÙÅ•—ï¥ÅÖÃÅΩâ©ïç—mtÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°Õïùµïπ–ÄÑÙÅπ’±∞ÄòòÅÕïùµïπ–π1ïπù—†Ä¯Ä¿ÄòòÅÕïùµïπ—l¡tÄÑÙÅπ’±∞§Å…ïÕ’±–π¡¡ïπê°Õïùµïπ—l¡tπQΩM—…•πú†§§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Å…ïÕ’±–πQΩM—…•πú†§πQ…•¥†§Ï(ÄÄÄÄÄÄÄÅÙ(ÄÄÄÅÙ((ÄÄÄÅ•π—ï…πÖ∞ÅÕïÖ±ïêÅç±ÖÕÃÅ=Ÿï…±ÖÂΩ…¥ÄËÅΩ…¥(ÄÄÄÅÏ(ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅçΩπÕ–Å•π–Å]Õ·Q…ÖπÕ¡Ö…ïπ–ÄÙÄ¡‡¿¿¿¿¿¿»¿Ï(ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅçΩπÕ–Å•π–Å]Õ·QΩΩ±]•πëΩ‹ÄÙÄ¡‡¿¿¿¿¿¿‡¿Ï(ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅçΩπÕ–Å•π–Å]Õ·9Ωç—•ŸÖ—îÄÙÄ¡‡¿‡¿¿¿¿¿¿Ï(ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅ…ïÖëΩπ±‰ÅQ•µï»Åç±ΩÕïQ•µï»Ï((ÄÄÄÄÄÄÄÅ¡’â±•åÅ=Ÿï…±ÖÂΩ…¥°Iïç—Öπù±îÅÕç…ïïπ…ïÑ∞Å%π’µï…Öâ±îÒ=ç…1•πï%πôº¯Å±•πïÃ∞Å	•—µÖ¿ÅçÖ¡—’…ïë%µÖùî∞Å•π–ÅÕïçΩπëÃ§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅM—Ö…—AΩÕ•—•Ω∏ÄÙÅΩ…µM—Ö…—AΩÕ•—•Ω∏π5Öπ’Ö∞Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ	Ω’πëÃÄÙÅÕç…ïïπ…ïÑÏ(ÄÄÄÄÄÄÄÄÄÄÄÅΩ…µ	Ω…ëï…M—Â±îÄÙÅΩ…µ	Ω…ëï…M—Â±îπ9ΩπîÏ(ÄÄÄÄÄÄÄÄÄÄÄÅM°Ω›%πQÖÕ≠âÖ»ÄÙÅôÖ±ÕîÏ(ÄÄÄÄÄÄÄÄÄÄÄÅQΩ¡5ΩÕ–ÄÙÅ—…’îÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ	Öç≠Ω±Ω»ÄÙÅΩ±Ω»π5Öùïπ—ÑÏ(ÄÄÄÄÄÄÄÄÄÄÄÅQ…ÖπÕ¡Ö…ïπçÂ-ï‰ÄÙÅΩ±Ω»π5Öùïπ—ÑÏ((ÄÄÄÄÄÄÄÄÄÄÄÅôΩ…ïÖç†Ä°=ç…1•πï%πôºÅ±•πîÅ•∏Å±•πïÃ§ÅëëQ…ÖπÕ±Ö—•Ω∏°±•πî∞ÅçÖ¡—’…ïë%µÖùî§Ï((ÄÄÄÄÄÄÄÄÄÄÄÅç±ΩÕïQ•µï»ÄÙÅπï‹ÅQ•µï»†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅç±ΩÕïQ•µï»π%π—ï…ŸÖ∞ÄÙÅÕïçΩπëÃÄ®Äƒ¿¿¿Ï(ÄÄÄÄÄÄÄÄÄÄÄÅç±ΩÕïQ•µï»πQ•ç¨Ä¨ÙÅëï±ïùÖ—îÅÏÅ±ΩÕî†§ÏÅÙÏ(ÄÄÄÄÄÄÄÄÄÄÄÅç±ΩÕïQ•µï»πM—Ö…–†§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…Ω—ïç—ïêÅΩŸï……•ëîÅâΩΩ∞ÅM°Ω›]•—°Ω’—ç—•ŸÖ—•Ω∏ÅÏÅùï–ÅÏÅ…ï—’…∏Å—…’îÏÅÙÅÙ((ÄÄÄÄÄÄÄÅ¡…Ω—ïç—ïêÅΩŸï……•ëîÅ…ïÖ—ïAÖ…ÖµÃÅ…ïÖ—ïAÖ…ÖµÃ(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅùï–(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ…ïÖ—ïAÖ…ÖµÃÅ¡Ö…Öµï—ï…ÃÄÙÅâÖÕîπ…ïÖ—ïAÖ…ÖµÃÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ¡Ö…Öµï—ï…Ãπ·M—Â±îÅÙÅ]Õ·Q…ÖπÕ¡Ö…ïπ–ÅÅ]Õ·QΩΩ±]•πëΩ‹ÅÅ]Õ·9Ωç—•ŸÖ—îÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Å¡Ö…Öµï—ï…ÃÏ(ÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅŸΩ•êÅëëQ…ÖπÕ±Ö—•Ω∏°=ç…1•πï%πôºÅ±•πî∞Å	•—µÖ¿ÅçÖ¡—’…ïë%µÖùî§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅIïç—Öπù±îÅÖ…ïÑÄÙÅIïç—Öπù±îπ%π—ï…Õïç–°πï‹ÅIïç—Öπù±î°AΩ•π–πµ¡—‰∞ÅçÖ¡—’…ïë%µÖùîπM•Èî§∞Å±•πîπ	Ω’πëÃ§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°Ö…ïÑπ]•ë—†ÄÄ»ÅÒÅÖ…ïÑπ!ï•ù°–ÄÄ»§Å…ï—’…∏Ï(ÄÄÄÄÄÄÄÄÄÄÄÅΩ±Ω»ÅâÖç≠ù…Ω’πêÄÙÅMÖµ¡±ï	Öç≠ù…Ω’πê°çÖ¡—’…ïë%µÖùî∞ÅÖ…ïÑ§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅëΩ’â±îÅ±’µ•πÖπçîÄÙÅâÖç≠ù…Ω’πêπHÄ®Ä¿∏»‰‰Ä¨ÅâÖç≠ù…Ω’πêπÄ®Ä¿∏‘‡‹Ä¨ÅâÖç≠ù…Ω’πêπÄ®Ä¿∏ƒƒ–Ï(ÄÄÄÄÄÄÄÄÄÄÄÅΩ±Ω»ÅôΩ…ïù…Ω’πêÄÙÅ±’µ•πÖπçîÄ¯ÙÄƒ–‘Ä¸ÅΩ±Ω»π…Ωµ…ùà†»‡∞ÄÃ¿∞ÄÃ–§ÄËÅΩ±Ω»π]°•—îÏ((ÄÄÄÄÄÄÄÄÄÄÄÅ•π–ÅïÕ—•µÖ—ïë1•πïÃÄÙÅ5Ö—†π5Ö‡†ƒ∞Ä°•π–•5Ö—†πIΩ’πê†°ëΩ’â±î•±•πîπ	Ω’πëÃπ!ï•ù°–ÄºÅ5Ö—†π5Ö‡†ƒ∞Å5Ö—†π5•∏°±•πîπ	Ω’πëÃπ!ï•ù°–∞Ä–‡§§§§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ•π–ÅÕΩ’…çï1•πï!ï•ù°–ÄÙÅ5Ö—†π5Ö‡†ƒÿ∞Å±•πîπ	Ω’πëÃπ!ï•ù°–ÄºÅïÕ—•µÖ—ïë1•πïÃ§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ•π–ÅôΩπ—M•ÈîÄÙÅ5Ö—†π5Ö‡†ƒ¿∞Å5Ö—†π5•∏†–»∞Ä°•π–§°ÕΩ’…çï1•πï!ï•ù°–Ä®Ä¿∏‹»§§§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ1Öâï∞Å±Öâï∞ÄÙÅπï‹Å1Öâï∞†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ±Öâï∞π’—ΩM•ÈîÄÙÅôÖ±ÕîÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ±Öâï∞πQï·–ÄÙÅ±•πîπQ…ÖπÕ±Ö—•Ω∏Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ±Öâï∞πΩ…ïΩ±Ω»ÄÙÅôΩ…ïù…Ω’πêÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ±Öâï∞π	Öç≠Ω±Ω»ÄÙÅâÖç≠ù…Ω’πêÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ±Öâï∞πQï·—±•ù∏ÄÙÅΩπ—ïπ—±•ùπµïπ–πQΩ¡1ïô–Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ±Öâï∞πAÖëë•πúÄÙÅπï‹ÅAÖëë•πú†‘∞Ä»∞Ä‘∞Ä»§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ±Öâï∞π1ΩçÖ—•Ω∏ÄÙÅπï‹ÅAΩ•π–°5Ö—†π5Ö‡†¿∞Å±•πîπ	Ω’πëÃπ1ïô–Ä¥Ä‘§∞Å5Ö—†π5Ö‡†¿∞Å±•πîπ	Ω’πëÃπQΩ¿Ä¥ÄÃ§§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ±Öâï∞πM•ÈîÄÙÅπï‹ÅM•Èî°5Ö—†π5•∏°]•ë—†Ä¥Å±Öâï∞π1ïô–∞Å±•πîπ	Ω’πëÃπ]•ë—†Ä¨Äƒ»§∞Å5Ö—†π5•∏°!ï•ù°–Ä¥Å±Öâï∞πQΩ¿∞Å±•πîπ	Ω’πëÃπ!ï•ù°–Ä¨Ä‡§§Ï((ÄÄÄÄÄÄÄÄÄÄÄÅΩπ–Åô•——ïëΩπ–ÄÙÅπ’±∞Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ›°•±îÄ°ôΩπ—M•ÈîÄ¯ÙÄ‰§(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°ô•——ïëΩπ–ÄÑÙÅπ’±∞§Åô•——ïëΩπ–π•Õ¡ΩÕî†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅô•——ïëΩπ–ÄÙÅπï‹ÅΩπ–†âMïùΩîÅU$à∞ÅôΩπ—M•Èî∞ÅΩπ—M—Â±îπIïù’±Ö»∞Å…Ö¡°•çÕUπ•–πA•·ï∞§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ±Öâï∞πΩπ–ÄÙÅô•——ïëΩπ–Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅM•ÈîÅµïÖÕ’…ïêÄÙÅQï·—Iïπëï…ï»π5ïÖÕ’…ïQï·–°±Öâï∞πQï·–∞Åô•——ïëΩπ–∞(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅπï‹ÅM•Èî°5Ö—†π5Ö‡†»¿∞Å±Öâï∞π±•ïπ—M•Èîπ]•ë—†Ä¥Å±Öâï∞πAÖëë•πúπ!Ω…•ÈΩπ—Ö∞§∞Äƒ¿¿¿¿§∞(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅQï·—Ω…µÖ—±ÖùÃπ]Ω…ë	…ïÖ¨ÅÅQï·—Ω…µÖ—±ÖùÃπ9ΩAÖëë•πú§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°µïÖÕ’…ïêπ!ï•ù°–ÄÙÅ±Öâï∞π±•ïπ—M•Èîπ!ï•ù°–Ä¥Å±Öâï∞πAÖëë•πúπYï…—•çÖ∞§Åâ…ïÖ¨Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅôΩπ—M•Èî¥¥Ï(ÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÅΩπ—…Ω±Ãπëê°±Öâï∞§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…•ŸÖ—îÅÕ—Ö—•åÅΩ±Ω»ÅMÖµ¡±ï	Öç≠ù…Ω’πê°	•—µÖ¿Å•µÖùî∞ÅIïç—Öπù±îÅÖ…ïÑ§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ1•Õ–Ò•π–¯Å…ïëÃÄÙÅπï‹Å1•Õ–Ò•π–¯†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ1•Õ–Ò•π–¯Åù…ïïπÃÄÙÅπï‹Å1•Õ–Ò•π–¯†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ1•Õ–Ò•π–¯Åâ±’ïÃÄÙÅπï‹Å1•Õ–Ò•π–¯†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ•π–ÅÕ—ï¡`ÄÙÅ5Ö—†π5Ö‡†»∞ÅÖ…ïÑπ]•ë—†ÄºÄÃ‘§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ•π–ÅÕ—ï¡dÄÙÅ5Ö—†π5Ö‡†»∞ÅÖ…ïÑπ!ï•ù°–ÄºÄ»¿§Ï((ÄÄÄÄÄÄÄÄÄÄÄÅôΩ»Ä°•π–Å‰ÄÙÅÖ…ïÑπQΩ¿ÏÅ‰ÄÅÖ…ïÑπ	Ω——Ω¥ÏÅ‰Ä¨ÙÅÕ—ï¡d§(ÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅôΩ»Ä°•π–Å‡ÄÙÅÖ…ïÑπ1ïô–ÏÅ‡ÄÅÖ…ïÑπI•ù°–ÏÅ‡Ä¨ÙÅÕ—ï¡`§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅΩ±Ω»Å¡•·ï∞ÄÙÅ•µÖùîπï—A•·ï∞°‡∞Å‰§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ…ïëÃπëê°¡•·ï∞πH§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅù…ïïπÃπëê°¡•·ï∞π§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅâ±’ïÃπëê°¡•·ï∞π§Ï(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÙ(ÄÄÄÄÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°…ïëÃπΩ’π–ÄÙÙÄ¿§Å…ï—’…∏ÅΩ±Ω»π…Ωµ…ùà†»–‘∞Ä»–‘∞Ä»–‘§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ…ïëÃπMΩ…–†§ÏÅù…ïïπÃπMΩ…–†§ÏÅâ±’ïÃπMΩ…–†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ•π–Åµ•ëë±îÄÙÅ…ïëÃπΩ’π–ÄºÄ»Ï(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏ÅΩ±Ω»π…Ωµ…ùà°…ïëÕmµ•ëë±ït∞Åù…ïïπÕmµ•ëë±ït∞Åâ±’ïÕmµ•ëë±ït§Ï(ÄÄÄÄÄÄÄÅÙ((ÄÄÄÄÄÄÄÅ¡…Ω—ïç—ïêÅΩŸï……•ëîÅŸΩ•êÅ•Õ¡ΩÕî°âΩΩ∞Åë•Õ¡ΩÕ•πú§(ÄÄÄÄÄÄÄÅÏ(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÄ°ë•Õ¡ΩÕ•πúÄòòÅç±ΩÕïQ•µï»ÄÑÙÅπ’±∞§Åç±ΩÕïQ•µï»π•Õ¡ΩÕî†§Ï(ÄÄÄÄÄÄÄÄÄÄÄÅâÖÕîπ•Õ¡ΩÕî°ë•Õ¡ΩÕ•πú§Ï(ÄÄÄÄÄÄÄÅÙ(ÄÄÄÅÙ)Ù
