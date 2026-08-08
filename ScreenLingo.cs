@@ -12,7 +12,6 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
-using Microsoft.Win32;
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
@@ -21,8 +20,8 @@ using Windows.Storage.Streams;
 [assembly: System.Reflection.AssemblyTitle("ScreenLingo")]
 [assembly: System.Reflection.AssemblyDescription("Screen area OCR translator for Windows")]
 [assembly: System.Reflection.AssemblyProduct("ScreenLingo")]
-[assembly: System.Reflection.AssemblyVersion("0.4.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.4.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.4.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.4.1.0")]
 
 namespace ScreenLingo
 {
@@ -127,8 +126,6 @@ namespace ScreenLingo
 
     internal sealed class TrayApplicationContext : ApplicationContext
     {
-        private const string StartupRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-        private const string StartupValueName = "ScreenLingo";
         private const int HotkeyCapture = 100;
         private const int HotkeyCopy = 101;
         private const uint ModControl = 0x0002;
@@ -144,7 +141,6 @@ namespace ScreenLingo
         private readonly HotkeyWindow hotkeyWindow;
         private readonly AppSettings settings;
         private readonly MouseHookProc mouseHookCallback;
-        private readonly ToolStripMenuItem autostartItem;
         private OverlayForm overlay;
         private IntPtr mouseHook;
         private bool working;
@@ -183,11 +179,6 @@ namespace ScreenLingo
             menu.Items.Add("Копировать исходный текст   Ctrl+Shift+R", null, delegate { BeginCapture(true); });
             menu.Items.Add("Скрыть перевод", null, delegate { HideOverlay(); });
             menu.Items.Add(new ToolStripSeparator());
-            autostartItem = new ToolStripMenuItem("Запускать вместе с Windows");
-            autostartItem.Checked = IsAutostartEnabled();
-            autostartItem.Click += delegate { ToggleAutostart(); };
-            menu.Items.Add(autostartItem);
-            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Выход", null, delegate { Exit(); });
 
             trayIcon = new NotifyIcon();
@@ -203,46 +194,6 @@ namespace ScreenLingo
         {
             if (id == HotkeyCapture) BeginCapture(false);
             if (id == HotkeyCopy) BeginCapture(true);
-        }
-
-        private static bool IsAutostartEnabled()
-        {
-            try
-            {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(StartupRegistryPath, false))
-                {
-                    string value = key == null ? null : key.GetValue(StartupValueName) as string;
-                    if (String.IsNullOrWhiteSpace(value)) return false;
-                    string registeredPath = value.Trim().Trim('"');
-                    return String.Equals(Path.GetFullPath(registeredPath), Path.GetFullPath(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase);
-                }
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private void ToggleAutostart()
-        {
-            try
-            {
-                bool enable = !IsAutostartEnabled();
-                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(StartupRegistryPath))
-                {
-                    if (enable)
-                        key.SetValue(StartupValueName, "\"" + Application.ExecutablePath + "\"", RegistryValueKind.String);
-                    else
-                        key.DeleteValue(StartupValueName, false);
-                }
-                autostartItem.Checked = enable;
-                trayIcon.ShowBalloonTip(1600, "ScreenLingo", enable ? "Автозапуск включён." : "Автозапуск выключен.", ToolTipIcon.Info);
-            }
-            catch (Exception ex)
-            {
-                autostartItem.Checked = IsAutostartEnabled();
-                trayIcon.ShowBalloonTip(3500, "Не удалось изменить автозапуск", ex.Message, ToolTipIcon.Error);
-            }
         }
 
         private async void BeginCapture(bool copyOnly)
@@ -305,7 +256,72 @@ namespace ScreenLingo
             Exception current = ex;
             while (current.InnerException != null) current = current.InnerException;
             if (current is HttpRequestException || current is WebException)
-                return "Нет доступа к сервису перево�m�G����ƭy�= WmHotkey && HotkeyPressed != null) HotkeyPressed(message.WParam.ToInt32());
+                return "Нет доступа к сервису перевода. Проверьте интернет или VPN.";
+            return current.Message.Length > 180 ? current.Message.Substring(0, 180) : current.Message;
+        }
+
+        private static Bitmap Capture(Rectangle area)
+        {
+            Bitmap bitmap = new Bitmap(area.Width, area.Height, PixelFormat.Format32bppArgb);
+            using (Graphics graphics = Graphics.FromImage(bitmap))
+                graphics.CopyFromScreen(area.Left, area.Top, 0, 0, area.Size, CopyPixelOperation.SourceCopy);
+            return bitmap;
+        }
+
+        private void HideOverlay()
+        {
+            RemoveMouseDismissHook();
+            if (overlay != null && !overlay.IsDisposed) overlay.Close();
+            overlay = null;
+        }
+
+        private void InstallMouseDismissHook()
+        {
+            RemoveMouseDismissHook();
+            mouseHook = SetWindowsHookEx(WhMouseLl, mouseHookCallback, GetModuleHandle(null), 0);
+        }
+
+        private void RemoveMouseDismissHook()
+        {
+            if (mouseHook != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(mouseHook);
+                mouseHook = IntPtr.Zero;
+            }
+        }
+
+        private IntPtr OnGlobalMouseEvent(int code, IntPtr wParam, IntPtr lParam)
+        {
+            int message = wParam.ToInt32();
+            if (code >= 0 && (message == WmLeftButtonDown || message == WmRightButtonDown ||
+                              message == WmMiddleButtonDown || message == WmXButtonDown))
+                HideOverlay();
+            return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+        }
+
+        private void Exit()
+        {
+            HideOverlay();
+            UnregisterHotKey(hotkeyWindow.Handle, HotkeyCapture);
+            UnregisterHotKey(hotkeyWindow.Handle, HotkeyCopy);
+            hotkeyWindow.Dispose();
+            trayIcon.Visible = false;
+            trayIcon.Dispose();
+            ExitThread();
+        }
+
+        private sealed class HotkeyWindow : NativeWindow, IDisposable
+        {
+            public event Action<int> HotkeyPressed;
+
+            public HotkeyWindow()
+            {
+                CreateHandle(new CreateParams());
+            }
+
+            protected override void WndProc(ref Message message)
+            {
+                if (message.Msg == WmHotkey && HotkeyPressed != null) HotkeyPressed(message.WParam.ToInt32());
                 base.WndProc(ref message);
             }
 
