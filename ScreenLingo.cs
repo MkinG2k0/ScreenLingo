@@ -8,6 +8,7 @@ using System.Net;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
@@ -20,8 +21,8 @@ using Windows.Storage.Streams;
 [assembly: System.Reflection.AssemblyTitle("ScreenLingo")]
 [assembly: System.Reflection.AssemblyDescription("Screen area OCR translator for Windows")]
 [assembly: System.Reflection.AssemblyProduct("ScreenLingo")]
-[assembly: System.Reflection.AssemblyVersion("0.4.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.4.2.0")]
+[assembly: System.Reflection.AssemblyVersion("0.8.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.8.3.0")]
 
 namespace ScreenLingo
 {
@@ -30,10 +31,13 @@ namespace ScreenLingo
         [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
 
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+
         [STAThread]
         private static void Main(string[] args)
         {
-            SetProcessDPIAware();
+            EnableDpiAwareness();
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             if (args.Length > 0 && args[0].StartsWith("--self-test=", StringComparison.OrdinalIgnoreCase))
             {
@@ -44,6 +48,16 @@ namespace ScreenLingo
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new TrayApplicationContext());
+        }
+
+        private static void EnableDpiAwareness()
+        {
+            try
+            {
+                if (SetProcessDpiAwarenessContext(new IntPtr(-4))) return;
+            }
+            catch (EntryPointNotFoundException) { }
+            SetProcessDPIAware();
         }
 
         private static async Task RunSelfTest(string logPath)
@@ -61,9 +75,48 @@ namespace ScreenLingo
                     log.AppendLine("OCR_LINES=" + lines.Count);
                     log.AppendLine("OCR_TEXT=" + String.Join(" | ", lines.Select(delegate(OcrLineInfo line) { return line.Text; }).ToArray()));
                     if (lines.Count == 0) throw new InvalidOperationException("Self-test OCR found no text.");
+                    lines[0].Translation = "ĞÑ‚ĞºÑ€Ñ‹Ñ‚ÑŒ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸";
+                    using (Bitmap rendered = OverlayRenderer.Render(sample, lines))
+                    {
+                        int visiblePixels = 0;
+                        int semiTransparentPixels = 0;
+                        for (int y = 0; y < rendered.Height; y += 2)
+                            for (int x = 0; x < rendered.Width; x += 2)
+                            {
+                                int alpha = rendered.GetPixel(x, y).A;
+                                if (alpha > 0) visiblePixels++;
+                                if (alpha > 0 && alpha < 255) semiTransparentPixels++;
+                            }
+                        log.AppendLine("OVERLAY_VISIBLE_PIXELS=" + visiblePixels);
+                        log.AppendLine("OVERLAY_SEMITRANSPARENT_PIXELS=" + semiTransparentPixels);
+                        if (visiblePixels < 20) throw new InvalidOperationException("Self-test overlay renderer produced no visible content.");
+                        if (semiTransparentPixels > 0) throw new InvalidOperationException("Self-test overlay renderer produced transparency-key color fringes.");
+                        using (Bitmap preview = new Bitmap(sample))
+                        using (Graphics previewGraphics = Graphics.FromImage(preview))
+                        {
+                            previewGraphics.DrawImageUnscaled(rendered, Point.Empty);
+                            string previewPath = Path.ChangeExtension(logPath, ".png");
+                            preview.Save(previewPath, ImageFormat.Png);
+                            log.AppendLine("OVERLAY_PREVIEW=" + previewPath);
+                        }
+                    }
+                    lines[0].Translation = null;
                     string parsed = TranslationService.ParseResponse("[[[\"ĞÑ‚ĞºÑ€Ñ‹Ñ‚ÑŒ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸\",\"Open settings\",null,null,10]],null,\"en\"]");
                     log.AppendLine("TRANSLATION_PARSER=" + parsed);
                     if (parsed != "ĞÑ‚ĞºÑ€Ñ‹Ñ‚ÑŒ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸") throw new InvalidOperationException("Self-test translation parser failed.");
+                    string deepLParsed = TranslationService.ParseDeepLResponse("{\"translations\":[{\"detected_source_language\":\"EN\",\"text\":\"ĞÑ‚ĞºÑ€Ñ‹Ñ‚ÑŒ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸\"}]}");
+                    string libreParsed = TranslationService.ParseLibreResponse("{\"translatedText\":\"ĞÑ‚ĞºÑ€Ñ‹Ñ‚ÑŒ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸\"}");
+                    log.AppendLine("DEEPL_PARSER=" + deepLParsed);
+                    log.AppendLine("LIBRE_PARSER=" + libreParsed);
+                    if (deepLParsed != "ĞÑ‚ĞºÑ€Ñ‹Ñ‚ÑŒ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸" || libreParsed != "ĞÑ‚ĞºÑ€Ñ‹Ñ‚ÑŒ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸") throw new InvalidOperationException("Self-test provider parser failed.");
+                    uint hotkeyModifiers;
+                    Keys hotkeyKey;
+                    bool hotkeyParsed = HotkeyUtility.TryParse("Ctrl+Alt+F8", out hotkeyModifiers, out hotkeyKey);
+                    log.AppendLine("HOTKEY_PARSER=" + hotkeyParsed + "; KEY=" + hotkeyKey);
+                    if (!hotkeyParsed || hotkeyKey != Keys.F8) throw new InvalidOperationException("Self-test hotkey parser failed.");
+                    bool protectedSettings = AppSettings.TestProtectionRoundTrip("screenlingo-test-key");
+                    log.AppendLine("SETTINGS_DPAPI=" + protectedSettings);
+                    if (!protectedSettings) throw new InvalidOperationException("Self-test settings encryption failed.");
                     List<OcrLineInfo> paragraphSample = new List<OcrLineInfo>
                     {
                         new OcrLineInfo { Text = "Mike is ten. He is a schoolboy.", Bounds = new Rectangle(10, 10, 420, 36) },
@@ -73,6 +126,18 @@ namespace ScreenLingo
                     List<OcrLineInfo> paragraphs = TranslationService.BuildParagraphs(paragraphSample);
                     log.AppendLine("PARAGRAPHS=" + paragraphs.Count + "; TEXT=" + paragraphs[0].Text);
                     if (paragraphs.Count != 1) throw new InvalidOperationException("Self-test paragraph grouping failed.");
+                    List<OcrLineInfo> scatteredSample = new List<OcrLineInfo>
+                    {
+                        new OcrLineInfo { Text = "comfort", Bounds = new Rectangle(320, 10, 120, 28) },
+                        new OcrLineInfo { Text = "on difficult days", Bounds = new Rectangle(325, 44, 155, 22) },
+                        new OcrLineInfo { Text = "smiles", Bounds = new Rectangle(80, 34, 100, 28) },
+                        new OcrLineInfo { Text = "when sadness intrudes", Bounds = new Rectangle(70, 68, 190, 22) },
+                        new OcrLineInfo { Text = "laughter", Bounds = new Rectangle(540, 62, 135, 28) },
+                        new OcrLineInfo { Text = "to kiss your lips", Bounds = new Rectangle(545, 96, 145, 22) }
+                    };
+                    List<OcrLineInfo> scatteredBlocks = TranslationService.BuildParagraphs(scatteredSample);
+                    log.AppendLine("SCATTERED_BLOCKS=" + scatteredBlocks.Count + "; TEXT=" + String.Join(" | ", scatteredBlocks.Select(delegate(OcrLineInfo block) { return block.Text; }).ToArray()));
+                    if (scatteredBlocks.Count != 3) throw new InvalidOperationException("Self-test scattered layout grouping failed.");
                     try
                     {
                         List<OcrLineInfo> translated = await new TranslationService("ru").TranslateAsync(lines);
@@ -98,12 +163,25 @@ namespace ScreenLingo
     {
         public string SourceLanguage = "en-US";
         public string TargetLanguage = "ru";
+        public string TranslationProvider = "Google";
+        public string TranslationApiKey = String.Empty;
+        public string TranslationEndpoint = "https://libretranslate.com";
         public int OverlaySeconds = 18;
+        public int WatchIntervalMs = 2000;
+        public string CaptureHotkey = "Ctrl+Shift+T";
+        public string CopyHotkey = "Ctrl+Shift+R";
+        public string RepeatHotkey = "Ctrl+Shift+Y";
+        public string WatchHotkey = "Ctrl+Shift+W";
+
+        private static string SettingsPath
+        {
+            get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ScreenLingo.ini"); }
+        }
 
         public static AppSettings Load()
         {
             AppSettings settings = new AppSettings();
-            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ScreenLingo.ini");
+            string path = SettingsPath;
             if (!File.Exists(path)) return settings;
 
             foreach (string rawLine in File.ReadAllLines(path))
@@ -116,210 +194,60 @@ namespace ScreenLingo
                 string value = line.Substring(separator + 1).Trim();
                 if (key.Equals("SourceLanguage", StringComparison.OrdinalIgnoreCase)) settings.SourceLanguage = value;
                 if (key.Equals("TargetLanguage", StringComparison.OrdinalIgnoreCase)) settings.TargetLanguage = value;
+                if (key.Equals("TranslationProvider", StringComparison.OrdinalIgnoreCase)) settings.TranslationProvider = value;
+                if (key.Equals("TranslationEndpoint", StringComparison.OrdinalIgnoreCase)) settings.TranslationEndpoint = value;
+                if (key.Equals("TranslationApiKeyProtected", StringComparison.OrdinalIgnoreCase)) settings.TranslationApiKey = Unprotect(value);
+                if (key.Equals("CaptureHotkey", StringComparison.OrdinalIgnoreCase)) settings.CaptureHotkey = value;
+                if (key.Equals("CopyHotkey", StringComparison.OrdinalIgnoreCase)) settings.CopyHotkey = value;
+                if (key.Equals("RepeatHotkey", StringComparison.OrdinalIgnoreCase)) settings.RepeatHotkey = value;
+                if (key.Equals("WatchHotkey", StringComparison.OrdinalIgnoreCase)) settings.WatchHotkey = value;
                 int seconds;
                 if (key.Equals("OverlaySeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out seconds))
                     settings.OverlaySeconds = Math.Max(3, Math.Min(120, seconds));
+                int interval;
+                if (key.Equals("WatchIntervalMs", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out interval))
+                    settings.WatchIntervalMs = Math.Max(750, Math.Min(30000, interval));
             }
             return settings;
         }
-    }
 
-    internal sealed class TrayApplicationContext : ApplicationContext
-    {
-        private const int HotkeyCapture = 100;
-        private const int HotkeyCopy = 101;
-        private const uint ModControl = 0x0002;
-        private const uint ModShift = 0x0004;
-        private const int WmHotkey = 0x0312;
-        private const int WhMouseLl = 14;
-        private const int WmLeftButtonDown = 0x0201;
-        private const int WmRightButtonDown = 0x0204;
-        private const int WmMiddleButtonDown = 0x0207;
-        private const int WmXButtonDown = 0x020B;
-
-        private readonly NotifyIcon trayIcon;
-        private readonly Icon appIcon;
-        private readonly HotkeyWindow hotkeyWindow;
-        private readonly AppSettings settings;
-        private readonly MouseHookProc mouseHookCallback;
-        private OverlayForm overlay;
-        private IntPtr mouseHook;
-        private bool working;
-
-        [DllImport("user32.dll")]
-        private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
-
-        [DllImport("user32.dll")]
-        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern IntPtr SetWindowsHookEx(int hookId, MouseHookProc callback, IntPtr module, uint threadId);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool UnhookWindowsHookEx(IntPtr hook);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        private static extern IntPtr GetModuleHandle(string moduleName);
-
-        private delegate IntPtr MouseHookProc(int code, IntPtr wParam, IntPtr lParam);
-
-        public TrayApplicationContext()
+        public void Save()
         {
-            settings = AppSettings.Load();
-            mouseHookCallback = OnGlobalMouseEvent;
-            hotkeyWindow = new HotkeyWindow();
-            hotkeyWindow.HotkeyPressed += OnHotkeyPressed;
-            RegisterHotKey(hotkeyWindow.Handle, HotkeyCapture, ModControl | ModShift, (uint)Keys.T);
-            RegisterHotKey(hotkeyWindow.Handle, HotkeyCopy, ModControl | ModShift, (uint)Keys.R);
-
-            ContextMenuStrip menu = new ContextMenuStrip();
-            menu.Items.Add("ĞŸĞµÑ€ĞµĞ²ĞµÑÑ‚Ğ¸ Ğ¾Ğ±Ğ»Ğ°ÑÑ‚ÑŒ   Ctrl+Shift+T", null, delegate { BeginCapture(false); });
-            menu.Items.Add("ĞšĞ¾Ğ¿Ğ¸Ñ€Ğ¾Ğ²Ğ°Ñ‚ÑŒ Ğ¸ÑÑ…Ğ¾Ğ´Ğ½Ñ‹Ğ¹ Ñ‚ĞµĞºÑÑ‚   Ctrl+Shift+R", null, delegate { BeginCapture(true); });
-            menu.Items.Add("Ğ¡ĞºÑ€Ñ‹Ñ‚ÑŒ Ğ¿ĞµÑ€ĞµĞ²Ğ¾Ğ´", null, delegate { HideOverlay(); });
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Ğ’Ñ‹Ñ…Ğ¾Ğ´", null, delegate { Exit(); });
-
-            appIcon = AppIcon.Create();
-            trayIcon = new NotifyIcon();
-            trayIcon.Icon = appIcon;
-            trayIcon.Text = "ScreenLingo â€” Ğ¿ĞµÑ€ĞµĞ²Ğ¾Ğ´ Ğ¾Ğ±Ğ»Ğ°ÑÑ‚Ğ¸ ÑĞºÑ€Ğ°Ğ½Ğ°";
-            trayIcon.ContextMenuStrip = menu;
-            trayIcon.Visible = true;
-            trayIcon.DoubleClick += delegate { BeginCapture(false); };
-            trayIcon.ShowBalloonTip(3000, "ScreenLingo Ğ·Ğ°Ğ¿ÑƒÑ‰ĞµĞ½", "Ctrl+Shift+T â€” Ğ¿ĞµÑ€ĞµĞ²ĞµÑÑ‚Ğ¸ Ğ¾Ğ±Ğ»Ğ°ÑÑ‚ÑŒ\nCtrl+Shift+R â€” ÑĞºĞ¾Ğ¿Ğ¸Ñ€Ğ¾Ğ²Ğ°Ñ‚ÑŒ Ğ¸ÑÑ…Ğ¾Ğ´Ğ½Ñ‹Ğ¹ Ñ‚ĞµĞºÑÑ‚", ToolTipIcon.Info);
+            string contents =
+                "# Ğ¯Ğ·Ñ‹Ğº OCR Ğ´Ğ¾Ğ»Ğ¶ĞµĞ½ Ğ±Ñ‹Ñ‚ÑŒ ÑƒÑÑ‚Ğ°Ğ½Ğ¾Ğ²Ğ»ĞµĞ½ Ğ² Ğ¿Ğ°Ñ€Ğ°Ğ¼ĞµÑ‚Ñ€Ğ°Ñ… ÑĞ·Ñ‹ĞºĞ° Windows." + Environment.NewLine +
+                "SourceLanguage=" + SourceLanguage + Environment.NewLine +
+                "TargetLanguage=" + TargetLanguage + Environment.NewLine + Environment.NewLine +
+                "# Ğ¡ĞµÑ€Ğ²Ğ¸Ñ Ğ¿ĞµÑ€ĞµĞ²Ğ¾Ğ´Ğ°: Google, DeepL Ğ¸Ğ»Ğ¸ LibreTranslate." + Environment.NewLine +
+                "TranslationProvider=" + TranslationProvider + Environment.NewLine +
+                "TranslationEndpoint=" + TranslationEndpoint + Environment.NewLine +
+                "TranslationApiKeyProtected=" + Protect(TranslationApiKey) + Environment.NewLine + Environment.NewLine +
+                "# Ğ§ĞµÑ€ĞµĞ· ÑĞºĞ¾Ğ»ÑŒĞºĞ¾ ÑĞµĞºÑƒĞ½Ğ´ ÑĞºÑ€Ñ‹Ğ²Ğ°Ñ‚ÑŒ Ğ¿ĞµÑ€ĞµĞ²Ğ¾Ğ´." + Environment.NewLine +
+                "OverlaySeconds=" + OverlaySeconds + Environment.NewLine + Environment.NewLine +
+                "# Ğ˜Ğ½Ñ‚ĞµÑ€Ğ²Ğ°Ğ» Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞºĞ¸ Ğ¾Ğ±Ğ»Ğ°ÑÑ‚Ğ¸ Ğ² Ñ€ĞµĞ¶Ğ¸Ğ¼Ğµ Ğ½Ğ°Ğ±Ğ»ÑĞ´ĞµĞ½Ğ¸Ñ, Ğ² Ğ¼Ğ¸Ğ»Ğ»Ğ¸ÑĞµĞºÑƒĞ½Ğ´Ğ°Ñ…." + Environment.NewLine +
+                "WatchIntervalMs=" + WatchIntervalMs + Environment.NewLine + Environment.NewLine +
+                "# Ğ“Ğ»Ğ¾Ğ±Ğ°Ğ»ÑŒĞ½Ñ‹Ğµ Ğ³Ğ¾Ñ€ÑÑ‡Ğ¸Ğµ ĞºĞ»Ğ°Ğ²Ğ¸ÑˆĞ¸." + Environment.NewLine +
+                "CaptureHotkey=" + CaptureHotkey + Environment.NewLine +
+                "CopyHotkey=" + CopyHotkey + Environment.NewLine +
+                "RepeatHotkey=" + RepeatHotkey + Environment.NewLine +
+                "WatchHotkey=" + WatchHotkey + Environment.NewLine;
+            File.WriteAllText(SettingsPath, contents, new UTF8Encoding(false));
         }
 
-        private void OnHotkeyPressed(int id)
+        public void ResetHotkeys()
         {
-            if (id == HotkeyCapture) BeginCapture(false);
-            if (id == HotkeyCopy) BeginCapture(true);
+            CaptureHotkey = "Ctrl+Shift+T";
+            CopyHotkey = "Ctrl+Shift+R";
+            RepeatHotkey = "Ctrl+Shift+Y";
+            WatchHotkey = "Ctrl+Shift+W";
         }
 
-        private async void BeginCapture(bool copyOnly)
+        private static string Protect(string value)
         {
-            if (working) return;
-            working = true;
-            try
-            {
-                HideOverlay();
-                Rectangle selected;
-                using (SelectionForm selector = new SelectionForm())
-                {
-                    if (selector.ShowDialog() != DialogResult.OK) return;
-                    selected = selector.SelectedScreenRectangle;
-                }
-
-                await Task.Delay(90);
-                using (Bitmap image = Capture(selected))
-                {
-                    trayIcon.Text = "ScreenLingo â€” Ñ€Ğ°ÑĞ¿Ğ¾Ğ·Ğ½Ğ°Ñ Ñ‚ĞµĞºÑÑ‚â€¦";
-                    List<OcrLineInfo> lines = await OcrService.RecognizeAsync(image, settings.SourceLanguage);
-                    if (lines.Count == 0)
-                    {
-                        trayIcon.ShowBalloonTip(2200, "Ğ¢ĞµĞºÑÑ‚ Ğ½Ğµ Ğ½Ğ°Ğ¹Ğ´ĞµĞ½", "ĞŸĞ¾Ğ¿Ñ€Ğ¾Ğ±ÑƒĞ¹Ñ‚Ğµ Ğ²Ñ‹Ğ´ĞµĞ»Ğ¸Ñ‚ÑŒ Ğ¾Ğ±Ğ»Ğ°ÑÑ‚ÑŒ Ñ‚Ğ¾Ñ‡Ğ½ĞµĞµ Ğ¸Ğ»Ğ¸ ÑƒĞ²ĞµĞ»Ğ¸Ñ‡Ğ¸Ñ‚ÑŒ Ñ‚ĞµĞºÑÑ‚.", ToolTipIcon.Warning);
-                        return;
-                    }
-
-                    if (copyOnly)
-                    {
-                        string sourceText = String.Join(Environment.NewLine, lines.Select(delegate(OcrLineInfo line) { return line.Text; }).ToArray());
-                        Clipboard.SetText(sourceText);
-                        trayIcon.ShowBalloonTip(1800, "Ğ¢ĞµĞºÑÑ‚ ÑĞºĞ¾Ğ¿Ğ¸Ñ€Ğ¾Ğ²Ğ°Ğ½", sourceText.Length > 100 ? sourceText.Substring(0, 100) + "â€¦" : sourceText, ToolTipIcon.Info);
-                        return;
-                    }
-
-                    trayIcon.Text = "ScreenLingo â€” Ğ¿ĞµÑ€ĞµĞ²Ğ¾Ğ¶Ñƒâ€¦";
-                    TranslationService translator = new TranslationService(settings.TargetLanguage);
-                    lines = await translator.TranslateAsync(lines);
-                    if (lines.Count == 0) throw new InvalidOperationException("Ğ¡ĞµÑ€Ğ²Ğ¸Ñ Ğ¿ĞµÑ€ĞµĞ²Ğ¾Ğ´Ğ° Ğ½Ğµ Ğ²ĞµÑ€Ğ½ÑƒĞ» Ñ€ĞµĞ·ÑƒĞ»ÑŒÑ‚Ğ°Ñ‚.");
-
-                    overlay = new OverlayForm(selected, lines, image, settings.OverlaySeconds);
-                    overlay.FormClosed += delegate { RemoveMouseDismissHook(); overlay = null; };
-                    overlay.Show();
-                    InstallMouseDismissHook();
-                }
-            }
-            catch (Exception ex)
-            {
-                trayIcon.ShowBalloonTip(5000, "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ¿ĞµÑ€ĞµĞ²ĞµÑÑ‚Ğ¸", FriendlyError(ex), ToolTipIcon.Error);
-            }
-            finally
-            {
-                working = false;
-                trayIcon.Text = "ScreenLingo â€” Ğ¿ĞµÑ€ĞµĞ²Ğ¾Ğ´ Ğ¾Ğ±Ğ»Ğ°ÑÑ‚Ğ¸ ÑĞºÑ€Ğ°Ğ½Ğ°";
-            }
+            if (String.IsNullOrEmpty(value)) return String.Empty;
+            byte[] encrypted = ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser);
+            return Convert.ToBase64String(encrypted);
         }
 
-        private static string FriendlyError(Exception ex)
+        private static string Unprotect(string value)
         {
-            Exception current = ex;
-            while (current.InnerException != null) current = current.InnerException;
-            if (current is HttpRequestException || current is WebException)
-                return "ĞĞµÑ‚ Ğ´Ğ¾ÑÑ‚ÑƒĞ¿Ğ° Ğº ÑĞµÑ€Ğ²Ğ¸ÑÑƒ Ğ¿ĞµÑ€ĞµĞ²Ğ¾Ğ´Ğ°. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ğ¸Ğ½Ñ‚ĞµÑ€Ğ½ĞµÑ‚ Ğ¸Ğ»Ğ¸ VPN.";
-            return current.Message.Length > 180 ? current.Message.Substring(0, 180) : current.Message;
-        }
-
-        private static Bitmap Capture(Rectangle area)
-        {
-            Bitmap bitmap = new Bitmap(area.Width, area.Height, PixelFormat.Format32bppArgb);
-            using (Graphics graphics = Graphics.FromImage(bitmap))
-                graphics.CopyFromScreen(area.Left, area.Top, 0, 0, area.Size, CopyPixelOperation.SourceCopy);
-            return bitmap;
-        }
-
-        private void HideOverlay()
-        {
-            RemoveMouseDismissHook();
-            if (overlay != null && !overlay.IsDisposed) overlay.Close();
-            overlay = null;
-        }
-
-        private void InstallMouseDismissHook()
-        {
-            RemoveMouseDismissHook();
-            mouseHook = SetWindowsHookEx(WhMouseLl, mouseHookCallback, GetModuleHandle(null), 0);
-        }
-
-        private void RemoveMouseDismissHook()
-        {
-            if (mouseHook != IntPtr.Zero)
-            {
-                UnhookWindowsHookEx(mouseHook);
-                mouseHook = IntPtr.Zero;
-            }
-        }
-
-        private IntPtr OnGlobalMouseEvent(int code, IntPtr wParam, IntPtr lParam)
-        {
-            int message = wParam.ToInt32();
-            if (code >= 0 && (message == WmLeftButtonDown || message == WmRightButtonDown ||
-                              message == WmMiddleButtonDown || message == WmXButtonDown))
-                HideOverlay();
-            return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
-        }
-
-        private void Exit()
-        {
-            HideOverlay();
-            UnregisterHotKey(hotkeyWindow.Handle, HotkeyCapture);
-            UnregisterHotKey(hotkeyWindow.Handle, HotkeyCopy);
-            hotkeyWindow.Dispose();
-            trayIcon.Visible = false;
-            trayIcon.Dispose();
-            appIcon.Dispose();
-            ExitThread();
-        }
-
-        private sealed class HotkeyWindow : NativeWindow, IDisposable
-        {
-            public event Action<int> HotkeyPressed;
-
-            public HotkeyWindow()
-            {
-                CreateHandle(new CreateParams());
-            }
-
-            protected override v×^¼¶‰Ëkºwµç]±”¹I¥¡Ğ€´‘¥…µ•Ñ•È°É•Ñ…¹±”¹	½ÑÑ½´€´‘¥…µ•Ñ•È°‘¥…µ•Ñ•È°‘¥…µ•Ñ•È°€À°€äÀ¤ì(€€€€€€€€€€€Á…Ñ ¹‘‘ÉŒ¡É•Ñ…¹±”¹1•™Ğ°É•Ñ…¹±”¹	½ÑÑ½´€´‘¥…µ•Ñ•È°‘¥…µ•Ñ•È°‘¥…µ•Ñ•È°€äÀ°€äÀ¤ì(€€€€€€€€€€€Á…Ñ ¹±½Í•¥ÕÉ” ¤ì(€€€€€€€€€€€É•ÑÕÉ¸Á…Ñ ì(€€€€€€€ô(€€€ô((€€€¥¹Ñ•É¹…°Í•…±•±…ÍÌM•±•Ñ¥½¹½É´€è½É´(€€€ì(€€€€€€€ÁÉ¥Ù…Ñ”A½¥¹ĞÍÑ…ÉĞì(€€€€€€€ÁÉ¥Ù…Ñ”A½¥¹ĞÕÉÉ•¹Ğì(€€€€€€€ÁÉ¥Ù…Ñ”‰½½°Í•±•Ñ¥¹œì(€€€€€€€ÁÕ‰±¥ŒI•Ñ…¹±”M•±•Ñ•‘MÉ••¹I•Ñ…¹±”ì•ĞìÁÉ¥Ù…Ñ”Í•Ğìô((€€€€€€€ÁÕ‰±¥ŒM•±•Ñ¥½¹½É´ ¤(€€€€€€€ì(€€€€€€€€€€€I•Ñ…¹±”Ù¥ÉÑÕ…±MÉ••¸€ôMåÍÑ•µ%¹™½Éµ…Ñ¥½¸¹Y¥ÉÑÕ…±MÉ••¸ì(€€€€€€€€€€€MÑ…ÉÑA½Í¥Ñ¥½¸€ô½ÉµMÑ…ÉÑA½Í¥Ñ¥½¸¹5…¹Õ…°ì(€€€€€€€€€€€	½Õ¹‘Ì€ôÙ¥ÉÑÕ…±MÉ••¸ì(€€€€€€€€€€€½Éµ	½É‘•ÉMÑå±”€ô½Éµ	½É‘•ÉMÑå±”¹9½¹”ì(€€€€€€€€€€€M¡½İ%¹Q…Í­‰…È€ô™…±Í”ì(€€€€€€€€€€€Q½Á5½ÍĞ€ôÑÉÕ”ì(€€€€€€€€€€€	…­½±½È€ô½±½È¹	±…¬ì(€€€€€€€€€€€=Á…¥Ñä€ô€À¸Èàì(€€€€€€€€€€€ÕÉÍ½È€ôÕÉÍ½ÉÌ¹É½ÍÌì(€€€€€€€€€€€½Õ‰±•	Õ™™•É•€ôÑÉÕ”ì(€€€€€€€€€€€-•åAÉ•Ù¥•Ü€ôÑÉÕ”ì(€€€€€€€ô((€€€€€€€ÁÉ½Ñ•Ñ•½Ù•ÉÉ¥‘”Ù½¥=¹-•å½İ¸¡-•åÙ•¹ÑÉÌ”¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡”¹-•å½‘”€ôô-•åÌ¹Í…Á”¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¥…±½I•ÍÕ±Ğ€ô¥…±½I•ÍÕ±Ğ¹…¹•°ì(€€€€€€€€€€€€€€€±½Í” ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€‰…Í”¹=¹-•å½İ¸¡”¤ì(€€€€€€€ô((€€€€€€€ÁÉ½Ñ•Ñ•½Ù•ÉÉ¥‘”Ù½¥=¹5½ÕÍ•½İ¸¡5½ÕÍ•Ù•¹ÑÉÌ”¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡”¹	ÕÑÑ½¸€ôô5½ÕÍ•	ÕÑÑ½¹Ì¹1•™Ğ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€ÍÑ…ÉĞ€ô”¹1½…Ñ¥½¸ì(€€€€€€€€€€€€€€€ÕÉÉ•¹Ğ€ô”¹1½…Ñ¥½¸ì(€€€€€€€€€€€€€€€Í•±•Ñ¥¹œ€ôÑÉÕ”ì(€€€€€€€€€€€€€€€%¹Ù…±¥‘…Ñ” ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€‰…Í”¹=¹5½ÕÍ•½İ¸¡”¤ì(€€€€€€€ô((€€€€€€€ÁÉ½Ñ•Ñ•½Ù•ÉÉ¥‘”Ù½¥=¹5½ÕÍ•5½Ù”¡5½ÕÍ•Ù•¹ÑÉÌ”¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡Í•±•Ñ¥¹œ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€ÕÉÉ•¹Ğ€ô”¹1½…Ñ¥½¸ì(€€€€€€€€€€€€€€€%¹Ù…±¥‘…Ñ” ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€‰…Í”¹=¹5½ÕÍ•5½Ù”¡”¤ì(€€€€€€€ô((€€€€€€€ÁÉ½Ñ•Ñ•½Ù•ÉÉ¥‘”Ù½¥=¹5½ÕÍ•UÀ¡5½ÕÍ•Ù•¹ÑÉÌ”¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡Í•±•Ñ¥¹œ€˜˜”¹	ÕÑÑ½¸€ôô5½ÕÍ•	ÕÑÑ½¹Ì¹1•™Ğ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Í•±•Ñ¥¹œ€ô™…±Í”ì(€€€€€€€€€€€€€€€I•Ñ…¹±”±½…°€ô9½Éµ…±¥é•¡ÍÑ…ÉĞ°”¹1½…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€¥˜€¡±½…°¹]¥‘Ñ €øô€à€˜˜±½…°¹!•¥¡Ğ€øô€à¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€M•±•Ñ•‘MÉ••¹I•Ñ…¹±”€ô¹•ÜI•Ñ…¹±”¡1•™Ğ€¬±½…°¹1•™Ğ°Q½À€¬±½…°¹Q½À°±½…°¹]¥‘Ñ °±½…°¹!•¥¡Ğ¤ì(€€€€€€€€€€€€€€€€€€€¥…±½I•ÍÕ±Ğ€ô¥…±½I•ÍÕ±Ğ¹=,ì(€€€€€€€€€€€€€€€€€€€±½Í” ¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€•±Í”%¹Ù…±¥‘…Ñ” ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€‰…Í”¹=¹5½ÕÍ•UÀ¡”¤ì(€€€€€€€ô((€€€€€€€ÁÉ½Ñ•Ñ•½Ù•ÉÉ¥‘”Ù½¥=¹A…¥¹Ğ¡A…¥¹ÑÙ•¹ÑÉÌ”¤(€€€€€€€ì(€€€€€€€€€€€‰…Í”¹=¹A…¥¹Ğ¡”¤ì(€€€€€€€€€€€¥˜€ …Í•±•Ñ¥¹œ¤É•ÑÕÉ¸ì(€€€€€€€€€€€I•Ñ…¹±”É•Ñ…¹±”€ô9½Éµ…±¥é•¡ÍÑ…ÉĞ°ÕÉÉ•¹Ğ¤ì(€€€€€€€€€€€ÕÍ¥¹œ€¡	ÉÕÍ ™¥±°€ô¹•ÜM½±¥‘	ÉÕÍ ¡½±½È¹É½µÉˆ àÀ°€ÈÔÔ°€ÄÔÌ°€À¤¤¤”¹É…Á¡¥Ì¹¥±±I•Ñ…¹±”¡™¥±°°É•Ñ…¹±”¤ì(€€€€€€€€€€€ÕÍ¥¹œ€¡A•¸‰½É‘•È€ô¹•ÜA•¸¡½±½È¹É½µÉˆ ÈÔÔ°€ÈÔÔ°€ÄÜÜ°€ĞÔ¤°€Ì¤¤”¹É…Á¡¥Ì¹É…İI•Ñ…¹±”¡‰½É‘•È°É•Ñ…¹±”¤ì(€€€€€€€€€€€ÍÑÉ¥¹œÍ¥é”€ôÉ•Ñ…¹±”¹]¥‘Ñ €¬€ˆƒ\€ˆ€¬É•Ñ…¹±”¹!•¥¡Ğì(€€€€€€€€€€€ÕÍ¥¹œ€¡½¹Ğ™½¹Ğ€ô¹•Ü½¹Ğ ‰M•½”U$ˆ°€ÄÀ°½¹ÑMÑå±”¹	½±¤¤(€€€€€€€€€€€ÕÍ¥¹œ€¡	ÉÕÍ Ñ•áĞ€ô¹•ÜM½±¥‘	ÉÕÍ ¡½±½È¹]¡¥Ñ”¤¤”¹É…Á¡¥Ì¹É…İMÑÉ¥¹œ¡Í¥é”°™½¹Ğ°Ñ•áĞ°É•Ñ…¹±”¹1•™Ğ€¬€Ğ°5…Ñ ¹5…à È°É•Ñ…¹±”¹Q½À€´€ÈĞ¤¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥ŒI•Ñ…¹±”9½Éµ…±¥é•¡A½¥¹Ğ„°A½¥¹Ğˆ¤(€€€€€€€ì(€€€€€€€€€€€É•ÑÕÉ¸I•Ñ…¹±”¹É½µ1QI¡5…Ñ ¹5¥¸¡„¹`°ˆ¹`¤°5…Ñ ¹5¥¸¡„¹d°ˆ¹d¤°5…Ñ ¹5…à¡„¹`°ˆ¹`¤°5…Ñ ¹5…à¡„¹d°ˆ¹d¤¤ì(€€€€€€€ô(€€€ô((€€€¥¹Ñ•É¹…°Í•…±•±…ÍÌ=É1¥¹•%¹™¼(€€€ì(€€€€€€€ÁÕ‰±¥ŒÍÑÉ¥¹œQ•áĞì(€€€€€€€ÁÕ‰±¥ŒÍÑÉ¥¹œQÉ…¹Í±…Ñ¥½¸ì(€€€€€€€ÁÕ‰±¥ŒI•Ñ…¹±”	½Õ¹‘Ìì(€€€ô((€€€¥¹Ñ•É¹…°ÍÑ…Ñ¥Œ±…ÍÌ=ÉM•ÉÙ¥”(€€€ì(€€€€€€€ÁÕ‰±¥ŒÍÑ…Ñ¥Œ…Íå¹ŒQ…Í¬ñ1¥ÍĞñ=É1¥¹•%¹™¼øøI•½¹¥é•Íå¹Œ¡	¥Ñµ…À‰¥Ñµ…À°ÍÑÉ¥¹œ±…¹Õ…•Q…œ¤(€€€€€€€ì(€€€€€€€€€€€ÕÍ¥¹œ€¡5•µ½ÉåMÑÉ•…´µ•µ½Éä€ô¹•Ü5•µ½ÉåMÑÉ•…´ ¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€‰¥Ñµ…À¹M…Ù”¡µ•µ½Éä°%µ…•½Éµ…Ğ¹A¹œ¤ì(€€€€€€€€€€€€€€€µ•µ½Éä¹A½Í¥Ñ¥½¸€ô€Àì(€€€€€€€€€€€€€€€ÕÍ¥¹œ€¡%I…¹‘½µ•ÍÍMÑÉ•…´É…¹‘½´€ôµ•µ½Éä¹ÍI…¹‘½µ•ÍÍMÑÉ•…´ ¤¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€	¥Ñµ…Á•½‘•È‘•½‘•È€ô…İ…¥Ğ	¥Ñµ…Á•½‘•È¹É•…Ñ•Íå¹Œ¡É…¹‘½´¤ì(€€€€€€€€€€€€€€€€€€€M½™Ñİ…É•	¥Ñµ…ÀÍ½™Ñİ…É•	¥Ñµ…À€ô…İ…¥Ğ‘•½‘•È¹•ÑM½™Ñİ…É•	¥Ñµ…ÁÍå¹Œ¡	¥Ñµ…ÁA¥á•±½Éµ…Ğ¹	É„à°	¥Ñµ…Á±Á¡…5½‘”¹AÉ•µÕ±Ñ¥Á±¥•¤ì(€€€€€€€€€€€€€€€€€€€=É¹¥¹”•¹¥¹”€ô=É¹¥¹”¹QÉåÉ•…Ñ•É½µ1…¹Õ…”¡¹•Ü1…¹Õ…”¡±…¹Õ…•Q…œ¤¤ì(€€€€€€€€€€€€€€€€€€€¥˜€¡•¹¥¹”€ôô¹Õ±°¤•¹¥¹”€ô=É¹¥¹”¹QÉåÉ•…Ñ•É½µUÍ•ÉAÉ½™¥±•1…¹Õ…•Ì ¤ì(€€€€€€€€€€€€€€€€€€€¥˜€¡•¹¥¹”€ôô¹Õ±°¤Ñ¡É½Ü¹•Ü%¹Ù…±¥‘=Á•É…Ñ¥½¹á•ÁÑ¥½¸ ‹BFFBÃB÷BûBËBãFBÔƒF?BßF/BëBûBËBûBäƒBÿBÃBëB×F=HƒBÓBïF<€ˆ€¬±…¹Õ…•Q…œ€¬€ˆƒBÈƒBÿBÃFBÃBóB×FFBÃF]¥¹‘½İÌ¸ˆ¤ì(€€€€€€€€€€€€€€€€€€€=ÉI•ÍÕ±ĞÉ•ÍÕ±Ğ€ô…İ…¥Ğ•¹¥¹”¹I•½¹¥é•Íå¹Œ¡Í½™Ñİ…É•	¥Ñµ…À¤ì(€€€€€€€€€€€€€€€€€€€1¥ÍĞñ=É1¥¹•%¹™¼ø±¥¹•Ì€ô¹•Ü1¥ÍĞñ=É1¥¹•%¹™¼ø ¤ì(€€€€€€€€€€€€€€€€€€€™½É•… €¡=É1¥¹”±¥¹”¥¸É•ÍÕ±Ğ¹1¥¹•Ì¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡MÑÉ¥¹œ¹%Í9Õ±±=É]¡¥Ñ•MÁ…”¡±¥¹”¹Q•áĞ¤ñğ±¥¹”¹]½É‘Ì¹½Õ¹Ğ€ôô€À¤½¹Ñ¥¹Õ”ì(€€€€€€€€€€€€€€€€€€€€€€€‘½Õ‰±”±•™Ğ€ô±¥¹”¹]½É‘Ì¹5¥¸¡‘•±•…Ñ”¡=É]½Éİ½É¤ìÉ•ÑÕÉ¸İ½É¹	½Õ¹‘¥¹I•Ğ¹`ìô¤ì(€€€€€€€€€€€€€€€€€€€€€€€‘½Õ‰±”Ñ½À€ô±¥¹”¹]½É‘Ì¹5¥¸¡‘•±•…Ñ”¡=É]½Éİ½É¤ìÉ•ÑÕÉ¸İ½É¹	½Õ¹‘¥¹I•Ğ¹dìô¤ì(€€€€€€€€€€€€€€€€€€€€€€€‘½Õ‰±”É¥¡Ğ€ô±¥¹”¹]½É‘Ì¹5…à¡‘•±•…Ñ”¡=É]½Éİ½É¤ìÉ•ÑÕÉ¸İ½É¹	½Õ¹‘¥¹I•Ğ¹`€¬İ½É¹	½Õ¹‘¥¹I•Ğ¹]¥‘Ñ ìô¤ì(€€€€€€€€€€€€€€€€€€€€€€€‘½Õ‰±”‰½ÑÑ½´€ô±¥¹”¹]½É‘Ì¹5…à¡‘•±•…Ñ”¡=É]½Éİ½É¤ìÉ•ÑÕÉ¸İ½É¹	½Õ¹‘¥¹I•Ğ¹d€¬İ½É¹	½Õ¹‘¥¹I•Ğ¹!•¥¡Ğìô¤ì(€€€€€€€€€€€€€€€€€€€€€€€±¥¹•Ì¹‘¡¹•Ü=É1¥¹•%¹™¼(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€Q•áĞ€ô±¥¹”¹Q•áĞ¹QÉ¥´ ¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€	½Õ¹‘Ì€ôI•Ñ…¹±”¹É½µ1QI ¡¥¹Ğ¥5…Ñ ¹±½½È¡±•™Ğ¤°€¡¥¹Ğ¥5…Ñ ¹±½½È¡Ñ½À¤°€¡¥¹Ğ¥5…Ñ ¹•¥±¥¹œ¡É¥¡Ğ¤°€¡¥¹Ğ¥5…Ñ ¹•¥±¥¹œ¡‰½ÑÑ½´¤¤(€€€€€€€€€€€€€€€€€€€€€€€ô¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€Í½™Ñİ…É•	¥Ñµ…À¹¥ÍÁ½Í” ¤ì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸±¥¹•Ìì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô(€€€€€€€ô(€€€ô((€€€¥¹Ñ•É¹…°Í•…±•±…ÍÌQÉ…¹Í±…Ñ¥½¹M•ÉÙ¥”(€€€ì(€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥ŒÉ•…‘½¹±ä!ÑÑÁ±¥•¹Ğ±¥•¹Ğ€ôÉ•…Ñ•±¥•¹Ğ ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”É•…‘½¹±äÍÑÉ¥¹œÑ…É•Ñ1…¹Õ…”ì((€€€€€€€ÁÕ‰±¥ŒQÉ…¹Í±…Ñ¥½¹M•ÉÙ¥”¡ÍÑÉ¥¹œÑ…É•Ñ1…¹Õ…”¤(€€€€€€€ì(€€€€€€€€€€€Ñ¡¥Ì¹Ñ…É•Ñ1…¹Õ…”€ôÑ…É•Ñ1…¹Õ…”ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ!ÑÑÁ±¥•¹ĞÉ•…Ñ•±¥•¹Ğ ¤(€€€€€€€ì(€€€€€€€€€€€!ÑÑÁ±¥•¹Ğ±¥•¹Ğ€ô¹•Ü!ÑÑÁ±¥•¹Ğ ¤ì(€€€€€€€€€€€±¥•¹Ğ¹Q¥µ•½ÕĞ€ôQ¥µ•MÁ…¸¹É½µM•½¹‘Ì ÄÈ¤ì(€€€€€€€€€€€±¥•¹Ğ¹•™…Õ±ÑI•ÅÕ•ÍÑ!•…‘•ÉÌ¹UÍ•É•¹Ğ¹A…ÉÍ•‘ ‰5½é¥±±„¼Ô¸ÀMÉ••¹1¥¹¼¼À¸Äˆ¤ì(€€€€€€€€€€€É•ÑÕÉ¸±¥•¹Ğì(€€€€€€€ô((€€€€€€€ÁÕ‰±¥Œ…Íå¹ŒQ…Í¬ñ1¥ÍĞñ=É1¥¹•%¹™¼øøQÉ…¹Í±…Ñ•Íå¹Œ¡1¥ÍĞñ=É1¥¹•%¹™¼ø±¥¹•Ì¤(€€€€€€€ì(€€€€€€€€€€€1¥ÍĞñ=É1¥¹•%¹™¼øÕÍ•™Õ°€ô±¥¹•Ì(€€€€€€€€€€€€€€€€¹]¡•É”¡‘•±•…Ñ”¡=É1¥¹•%¹™¼±¥¹”¤ìÉ•ÑÕÉ¸±¥¹”¹Q•áĞ¹¹ä¡¡…È¹%Í1•ÑÑ•È¤ìô¤(€€€€€€€€€€€€€€€€¹=É‘•É	ä¡‘•±•…Ñ”¡=É1¥¹•%¹™¼±¥¹”¤ìÉ•ÑÕÉ¸±¥¹”¹	½Õ¹‘Ì¹Q½Àìô¤(€€€€€€€€€€€€€€€€¹Q¡•¹	ä¡‘•±•…Ñ”¡=É1¥¹•%¹™¼±¥¹”¤ìÉ•ÑÕÉ¸±¥¹”¹	½Õ¹‘Ì¹1•™Ğìô¤(€€€€€€€€€€€€€€€€¹Q…­” ĞÀ¤(€€€€€€€€€€€€€€€€¹Q½1¥ÍĞ ¤ì(€€€€€€€€€€€1¥ÍĞñ=É1¥¹•%¹™¼ø‰±½­Ì€ô	Õ¥±‘A…É…É…Á¡Ì¡ÕÍ•™Õ°¤ì(€€€€€€€€€€€1¥ÍĞñQ…Í¬øÑ…Í­Ì€ô¹•Ü1¥ÍĞñQ…Í¬ø ¤ì(€€€€€€€€€€€™½É•… €¡=É1¥¹•%¹™¼‰±½¬¥¸‰±½­Ì¤Ñ…Í­Ì¹‘¡QÉ…¹Í±…Ñ•1¥¹•Íå¹Œ¡‰±½¬¤¤ì(€€€€€€€€€€€…İ…¥ĞQ…Í¬¹]¡•¹±°¡Ñ…Í­Ì¹Q½ÉÉ…ä ¤¤ì(€€€€€€€€€€€É•ÑÕÉ¸‰±½­Ì¹]¡•É”¡‘•±•…Ñ”¡=É1¥¹•%¹™¼‰±½¬¤ìÉ•ÑÕÉ¸€…MÑÉ¥¹œ¹%Í9Õ±±=É]¡¥Ñ•MÁ…”¡‰±½¬¹QÉ…¹Í±…Ñ¥½¸¤ìô¤¹Q½1¥ÍĞ ¤ì(€€€€€€€ô((€€€€€€€¥¹Ñ•É¹…°ÍÑ…Ñ¥Œ1¥ÍĞñ=É1¥¹•%¹™¼ø	Õ¥±‘A…É…É…Á¡Ì¡1¥ÍĞñ=É1¥¹•%¹™¼ø±¥¹•Ì¤(€€€€€€€ì(€€€€€€€€€€€1¥ÍĞñ=É1¥¹•%¹™¼ø‰±½­Ì€ô¹•Ü1¥ÍĞñ=É1¥¹•%¹™¼ø ¤ì(€€€€€€€€€€€1¥ÍĞñ=É1¥¹•%¹™¼øÕÉÉ•¹Ğ€ô¹•Ü1¥ÍĞñ=É1¥¹•%¹™¼ø ¤ì(€€€€€€€€€€€I•Ñ…¹±”ÕÉÉ•¹Ñ	½Õ¹‘Ì€ôI•Ñ…¹±”¹µÁÑäì((€€€€€€€€€€€™½É•… €¡=É1¥¹•%¹™¼±¥¹”¥¸±¥¹•Ì¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€‰½½°‰•±½¹Ì€ô™…±Í”ì(€€€€€€€€€€€€€€€¥˜€¡ÕÉÉ•¹Ğ¹½Õ¹Ğ€ø€À¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€=É1¥¹•%¹™¼ÁÉ•Ù¥½ÕÌ€ôÕÉÉ•¹ÑmÕÉÉ•¹Ğ¹½Õ¹Ğ€´€Åtì(€€€€€€€€€€€€€€€€€€€¥¹ĞÙ•ÉÑ¥…±…À€ô±¥¹”¹	½Õ¹‘Ì¹Q½À€´ÁÉ•Ù¥½ÕÌ¹	½Õ¹‘Ì¹	½ÑÑ½´ì(€€€€€€€€€€€€€€€€€€€¥¹Ğ…±±½İ•‘…À€ô€¡¥¹Ğ¤¡5…Ñ ¹5…à¡ÁÉ•Ù¥½ÕÌ¹	½Õ¹‘Ì¹!•¥¡Ğ°±¥¹”¹	½Õ¹‘Ì¹!•¥¡Ğ¤€¨€Ä¸ÌÔ¤ì(€€€€€€€€€€€€€€€€€€€‰½½°¡½É¥é½¹Ñ…±±åI•±…Ñ•€ô±¥¹”¹	½Õ¹‘Ì¹1•™Ğ€ğôÕÉÉ•¹Ñ	½Õ¹‘Ì¹I¥¡Ğ€¬€ĞÀ€˜˜(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€±¥¹”¹	½Õ¹‘Ì¹I¥¡Ğ€øôÕÉÉ•¹Ñ	½Õ¹‘Ì¹1•™Ğ€´€ĞÀì(€€€€€€€€€€€€€€€€€€€‰•±½¹Ì€ôÙ•ÉÑ¥…±…À€ğô…±±½İ•‘…À€˜˜Ù•ÉÑ¥…±…À€øô€µ5…Ñ ¹5…à¡ÁÉ•Ù¥½ÕÌ¹	½Õ¹‘Ì¹!•¥¡Ğ°±¥¹”¹	½Õ¹‘Ì¹!•¥¡Ğ¤€˜˜¡½É¥é½¹Ñ…±±åI•±…Ñ•ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€¥˜€ …‰•±½¹Ì€˜˜ÕÉÉ•¹Ğ¹½Õ¹Ğ€ø€À¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€‰±½­Ì¹‘¡É•…Ñ•A…É…É…Á ¡ÕÉÉ•¹Ğ°ÕÉÉ•¹Ñ	½Õ¹‘Ì¤¤ì(€€€€€€€€€€€€€€€€€€€ÕÉÉ•¹Ğ¹±•…È ¤ì(€€€€€€€€€€€€€€€€€€€ÕÉÉ•¹Ñ	½Õ¹‘Ì€ôI•Ñ…¹±”¹µÁÑäì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€ÕÉÉ•¹Ğ¹‘¡±¥¹”¤ì(€€€€€€€€€€€€€€€ÕÉÉ•¹Ñ	½Õ¹‘Ì€ôÕÉÉ•¹Ñ	½Õ¹‘Ì¹%ÍµÁÑä€ü±¥¹”¹	½Õ¹‘Ì€èI•Ñ…¹±”¹U¹¥½¸¡ÕÉÉ•¹Ñ	½Õ¹‘Ì°±¥¹”¹	½Õ¹‘Ì¤ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡ÕÉÉ•¹Ğ¹½Õ¹Ğ€ø€À¤‰±½­Ì¹‘¡É•…Ñ•A…É…É…Á ¡ÕÉÉ•¹Ğ°ÕÉÉ•¹Ñ	½Õ¹‘Ì¤¤ì(€€€€€€€€€€€É•ÑÕÉ¸‰±½­Ìì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ=É1¥¹•%¹™¼É•…Ñ•A…É…É…Á ¡1¥ÍĞñ=É1¥¹•%¹™¼ø±¥¹•Ì°I•Ñ…¹±”‰½Õ¹‘Ì¤(€€€€€€€ì(€€€€€€€€€€€É•ÑÕÉ¸¹•Ü=É1¥¹•%¹™¼(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Q•áĞ€ôMÑÉ¥¹œ¹)½¥¸ ˆ€ˆ°±¥¹•Ì¹M•±•Ğ¡‘•±•…Ñ”¡=É1¥¹•%¹™¼±¥¹”¤ìÉ•ÑÕÉ¸±¥¹”¹Q•áĞ¹QÉ¥´ ¤ìô¤¹Q½ÉÉ…ä ¤¤°(€€€€€€€€€€€€€€€	½Õ¹‘Ì€ô‰½Õ¹‘Ì(€€€€€€€€€€€ôì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”…Íå¹ŒQ…Í¬QÉ…¹Í±…Ñ•1¥¹•Íå¹Œ¡=É1¥¹•%¹™¼±¥¹”¤(€€€€€€€ì(€€€€€€€€€€€ÍÑÉ¥¹œÕÉ°€ô€‰¡ÑÑÁÌè¼½ÑÉ…¹Í±…Ñ”¹½½±•…Á¥Ì¹½´½ÑÉ…¹Í±…Ñ•}„½Í¥¹±”ı±¥•¹ĞõÑà™Í°õ…ÕÑ¼™Ñ°ôˆ€¬(€€€€€€€€€€€€€€€€€€€€€€€€UÉ¤¹Í…Á•…Ñ…MÑÉ¥¹œ¡Ñ…É•Ñ1…¹Õ…”¤€¬€ˆ™‘ĞõĞ™Äôˆ€¬UÉ¤¹Í…Á•…Ñ…MÑÉ¥¹œ¡±¥¹”¹Q•áĞ¤ì(€€€€€€€€€€€ÍÑÉ¥¹œ©Í½¸€ô…İ…¥Ğ±¥•¹Ğ¹•ÑMÑÉ¥¹Íå¹Œ¡ÕÉ°¤ì(€€€€€€€€€€€±¥¹”¹QÉ…¹Í±…Ñ¥½¸€ôA…ÉÍ•I•ÍÁ½¹Í”¡©Í½¸¤ì(€€€€€€€ô((€€€€€€€¥¹Ñ•É¹…°ÍÑ…Ñ¥ŒÍÑÉ¥¹œA…ÉÍ•I•ÍÁ½¹Í”¡ÍÑÉ¥¹œ©Í½¸¤(€€€€€€€ì(€€€€€€€€€€€)…Ù…MÉ¥ÁÑM•É¥…±¥é•ÈÍ•É¥…±¥é•È€ô¹•Ü)…Ù…MÉ¥ÁÑM•É¥…±¥é•È ¤ì(€€€€€€€€€€€½‰©•ÑmtÉ½½Ğ€ôÍ•É¥…±¥é•È¹•Í•É¥…±¥é•=‰©•Ğ¡©Í½¸¤…Ì½‰©•Ñmtì(€€€€€€€€€€€¥˜€¡É½½Ğ€ôô¹Õ±°ñğÉ½½Ğ¹1•¹Ñ €ôô€À¤É•ÑÕÉ¸MÑÉ¥¹œ¹µÁÑäì(€€€€€€€€€€€½‰©•ÑmtÍ•µ•¹ÑÌ€ôÉ½½ÑlÁt…Ì½‰©•Ñmtì(€€€€€€€€€€€¥˜€¡Í•µ•¹ÑÌ€ôô¹Õ±°¤É•ÑÕÉ¸MÑÉ¥¹œ¹µÁÑäì(€€€€€€€€€€€MÑÉ¥¹	Õ¥±‘•ÈÉ•ÍÕ±Ğ€ô¹•ÜMÑÉ¥¹	Õ¥±‘•È ¤ì(€€€€€€€€€€€™½É•… €¡½‰©•Ğ¥Ñ•´¥¸Í•µ•¹ÑÌ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€½‰©•ÑmtÍ•µ•¹Ğ€ô¥Ñ•´…Ì½‰©•Ñmtì(€€€€€€€€€€€€€€€¥˜€¡Í•µ•¹Ğ€„ô¹Õ±°€˜˜Í•µ•¹Ğ¹1•¹Ñ €ø€À€˜˜Í•µ•¹ÑlÁt€„ô¹Õ±°¤É•ÍÕ±Ğ¹ÁÁ•¹¡Í•µ•¹ÑlÁt¹Q½MÑÉ¥¹œ ¤¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€É•ÑÕÉ¸É•ÍÕ±Ğ¹Q½MÑÉ¥¹œ ¤¹QÉ¥´ ¤ì(€€€€€€€ô(€€€ô((€€€¥¹Ñ•É¹…°Í•…±•±…ÍÌ=Ù•É±…å½É´€è½É´(€€€ì(€€€€€€€ÁÉ¥Ù…Ñ”½¹ÍĞ¥¹Ğ]ÍáQÉ…¹ÍÁ…É•¹Ğ€ô€ÁàÀÀÀÀÀÀÈÀì(€€€€€€€ÁÉ¥Ù…Ñ”½¹ÍĞ¥¹Ğ]ÍáQ½½±]¥¹‘½Ü€ô€ÁàÀÀÀÀÀÀàÀì(€€€€€€€ÁÉ¥Ù…Ñ”½¹ÍĞ¥¹Ğ]Íá9½Ñ¥Ù…Ñ”€ô€ÁàÀàÀÀÀÀÀÀì(€€€€€€€ÁÉ¥Ù…Ñ”É•…‘½¹±äQ¥µ•È±½Í•Q¥µ•Èì((€€€€€€€ÁÕ‰±¥Œ=Ù•É±…å½É´¡I•Ñ…¹±”ÍÉ••¹É•„°%¹Õµ•É…‰±”ñ=É1¥¹•%¹™¼ø±¥¹•Ì°	¥Ñµ…À…ÁÑÕÉ•‘%µ…”°¥¹ĞÍ•½¹‘Ì¤(€€€€€€€ì(€€€€€€€€€€€MÑ…ÉÑA½Í¥Ñ¥½¸€ô½ÉµMÑ…ÉÑA½Í¥Ñ¥½¸¹5…¹Õ…°ì(€€€€€€€€€€€	½Õ¹‘Ì€ôÍÉ••¹É•„ì(€€€€€€€€€€€½Éµ	½É‘•ÉMÑå±”€ô½Éµ	½É‘•ÉMÑå±”¹9½¹”ì(€€€€€€€€€€€M¡½İ%¹Q…Í­‰…È€ô™…±Í”ì(€€€€€€€€€€€Q½Á5½ÍĞ€ôÑÉÕ”ì(€€€€€€€€€€€	…­½±½È€ô½±½È¹5…•¹Ñ„ì(€€€€€€€€€€€QÉ…¹ÍÁ…É•¹å-•ä€ô½±½È¹5…•¹Ñ„ì((€€€€€€€€€€€™½É•… €¡=É1¥¹•%¹™¼±¥¹”¥¸±¥¹•Ì¤‘‘QÉ…¹Í±…Ñ¥½¸¡±¥¹”°…ÁÑÕÉ•‘%µ…”¤ì((€€€€€€€€€€€±½Í•Q¥µ•È€ô¹•ÜQ¥µ•È ¤ì(€€€€€€€€€€€±½Í•Q¥µ•È¹%¹Ñ•ÉÙ…°€ôÍ•½¹‘Ì€¨€ÄÀÀÀì(€€€€€€€€€€€±½Í•Q¥µ•È¹Q¥¬€¬ô‘•±•…Ñ”ì±½Í” ¤ìôì(€€€€€€€€€€€±½Í•Q¥µ•È¹MÑ…ÉĞ ¤ì(€€€€€€€ô((€€€€€€€ÁÉ½Ñ•Ñ•½Ù•ÉÉ¥‘”‰½½°M¡½İ]¥Ñ¡½ÕÑÑ¥Ù…Ñ¥½¸ì•ĞìÉ•ÑÕÉ¸ÑÉÕ”ìôô((€€€€€€€ÁÉ½Ñ•Ñ•½Ù•ÉÉ¥‘”É•…Ñ•A…É…µÌÉ•…Ñ•A…É…µÌ(€€€€€€€ì(€€€€€€€€€€€•Ğ(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•…Ñ•A…É…µÌÁ…É…µ•Ñ•ÉÌ€ô‰…Í”¹É•…Ñ•A…É…µÌì(€€€€€€€€€€€€€€€Á…É…µ•Ñ•ÉÌ¹áMÑå±”ğô]ÍáQÉ…¹ÍÁ…É•¹Ğğ]ÍáQ½½±]¥¹‘½Üğ]Íá9½Ñ¥Ù…Ñ”ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸Á…É…µ•Ñ•ÉÌì(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”Ù½¥‘‘QÉ…¹Í±…Ñ¥½¸¡=É1¥¹•%¹™¼±¥¹”°	¥Ñµ…À…ÁÑÕÉ•‘%µ…”¤(€€€€€€€ì(€€€€€€€€€€€I•Ñ…¹±”…É•„€ôI•Ñ…¹±”¹%¹Ñ•ÉÍ•Ğ¡¹•ÜI•Ñ…¹±”¡A½¥¹Ğ¹µÁÑä°…ÁÑÕÉ•‘%µ…”¹M¥é”¤°±¥¹”¹	½Õ¹‘Ì¤ì(€€€€€€€€€€€¥˜€¡…É•„¹]¥‘Ñ €ğ€Èñğ…É•„¹!•¥¡Ğ€ğ€È¤É•ÑÕÉ¸ì(€€€€€€€€€€€½±½È‰…­É½Õ¹€ôM…µÁ±•	…­É½Õ¹¡…ÁÑÕÉ•‘%µ…”°…É•„¤ì(€€€€€€€€€€€‘½Õ‰±”±Õµ¥¹…¹”€ô‰…­É½Õ¹¹H€¨€À¸Èää€¬‰…­É½Õ¹¹€¨€À¸ÔàÜ€¬‰…­É½Õ¹¹€¨€À¸ÄÄĞì(€€€€€€€€€€€½±½È™½É•É½Õ¹€ô±Õµ¥¹…¹”€øô€ÄĞÔ€ü½±½È¹É½µÉˆ Èà°€ÌÀ°€ÌĞ¤€è½±½È¹]¡¥Ñ”ì((€€€€€€€€€€€¥¹Ğ•ÍÑ¥µ…Ñ•‘1¥¹•Ì€ô5…Ñ ¹5…à Ä°€¡¥¹Ğ¥5…Ñ ¹I½Õ¹ ¡‘½Õ‰±”¥±¥¹”¹	½Õ¹‘Ì¹!•¥¡Ğ€¼5…Ñ ¹5…à Ä°5…Ñ ¹5¥¸¡±¥¹”¹	½Õ¹‘Ì¹!•¥¡Ğ°€Ğà¤¤¤¤ì(€€€€€€€€€€€¥¹ĞÍ½ÕÉ•1¥¹•!•¥¡Ğ€ô5…Ñ ¹5…à ÄØ°±¥¹”¹	½Õ¹‘Ì¹!•¥¡Ğ€¼•ÍÑ¥µ…Ñ•‘1¥¹•Ì¤ì(€€€€€€€€€€€¥¹Ğ™½¹ÑM¥é”€ô5…Ñ ¹5…à ÄÀ°5…Ñ ¹5¥¸ ĞÈ°€¡¥¹Ğ¤¡Í½ÕÉ•1¥¹•!•¥¡Ğ€¨€À¸ÜÈ¤¤¤ì(€€€€€€€€€€€1…‰•°±…‰•°€ô¹•Ü1…‰•° ¤ì(€€€€€€€€€€€±…‰•°¹ÕÑ½M¥é”€ô™…±Í”ì(€€€€€€€€€€€±…‰•°¹Q•áĞ€ô±¥¹”¹QÉ…¹Í±…Ñ¥½¸ì(€€€€€€€€€€€±…‰•°¹½É•½±½È€ô™½É•É½Õ¹ì(€€€€€€€€€€€±…‰•°¹	…­½±½È€ô‰…­É½Õ¹ì(€€€€€€€€€€€±…‰•°¹Q•áÑ±¥¸€ô½¹Ñ•¹Ñ±¥¹µ•¹Ğ¹Q½Á1•™Ğì(€€€€€€€€€€€±…‰•°¹A…‘‘¥¹œ€ô¹•ÜA…‘‘¥¹œ Ô°€È°€Ô°€È¤ì(€€€€€€€€€€€±…‰•°¹1½…Ñ¥½¸€ô¹•ÜA½¥¹Ğ¡5…Ñ ¹5…à À°±¥¹”¹	½Õ¹‘Ì¹1•™Ğ€´€Ô¤°5…Ñ ¹5…à À°±¥¹”¹	½Õ¹‘Ì¹Q½À€´€Ì¤¤ì(€€€€€€€€€€€±…‰•°¹M¥é”€ô¹•ÜM¥é”¡5…Ñ ¹5¥¸¡]¥‘Ñ €´±…‰•°¹1•™Ğ°±¥¹”¹	½Õ¹‘Ì¹]¥‘Ñ €¬€ÄÈ¤°5…Ñ ¹5¥¸¡!•¥¡Ğ€´±…‰•°¹Q½À°±¥¹”¹	½Õ¹‘Ì¹!•¥¡Ğ€¬€à¤¤ì((€€€€€€€€€€€½¹Ğ™¥ÑÑ•‘½¹Ğ€ô¹Õ±°ì(€€€€€€€€€€€İ¡¥±”€¡™½¹ÑM¥é”€øô€ä¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¥˜€¡™¥ÑÑ•‘½¹Ğ€„ô¹Õ±°¤™¥ÑÑ•‘½¹Ğ¹¥ÍÁ½Í” ¤ì(€€€€€€€€€€€€€€€™¥ÑÑ•‘½¹Ğ€ô¹•Ü½¹Ğ ‰M•½”U$ˆ°™½¹ÑM¥é”°½¹ÑMÑå±”¹I•Õ±…È°É…Á¡¥ÍU¹¥Ğ¹A¥á•°¤ì(€€€€€€€€€€€€€€€±…‰•°¹½¹Ğ€ô™¥ÑÑ•‘½¹Ğì(€€€€€€€€€€€€€€€M¥é”µ•…ÍÕÉ•€ôQ•áÑI•¹‘•É•È¹5•…ÍÕÉ•Q•áĞ¡±…‰•°¹Q•áĞ°™¥ÑÑ•‘½¹Ğ°(€€€€€€€€€€€€€€€€€€€¹•ÜM¥é”¡5…Ñ ¹5…à ÈÀ°±…‰•°¹±¥•¹ÑM¥é”¹]¥‘Ñ €´±…‰•°¹A…‘‘¥¹œ¹!½É¥é½¹Ñ…°¤°€ÄÀÀÀÀ¤°(€€€€€€€€€€€€€€€€€€€Q•áÑ½Éµ…Ñ±…Ì¹]½É‘	É•…¬ğQ•áÑ½Éµ…Ñ±…Ì¹9½A…‘‘¥¹œ¤ì(€€€€€€€€€€€€€€€¥˜€¡µ•…ÍÕÉ•¹!•¥¡Ğ€ğô±…‰•°¹±¥•¹ÑM¥é”¹!•¥¡Ğ€´±…‰•°¹A…‘‘¥¹œ¹Y•ÉÑ¥…°¤‰É•…¬ì(€€€€€€€€€€€€€€€™½¹ÑM¥é”´´ì(€€€€€€€€€€€ô(€€€€€€€€€€€½¹ÑÉ½±Ì¹‘¡±…‰•°¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ½±½ÈM…µÁ±•	…­É½Õ¹¡	¥Ñµ…À¥µ…”°I•Ñ…¹±”…É•„¤(€€€€€€€ì(€€€€€€€€€€€1¥ÍĞñ¥¹ĞøÉ•‘Ì€ô¹•Ü1¥ÍĞñ¥¹Ğø ¤ì(€€€€€€€€€€€1¥ÍĞñ¥¹ĞøÉ••¹Ì€ô¹•Ü1¥ÍĞñ¥¹Ğø ¤ì(€€€€€€€€€€€1¥ÍĞñ¥¹Ğø‰±Õ•Ì€ô¹•Ü1¥ÍĞñ¥¹Ğø ¤ì(€€€€€€€€€€€¥¹ĞÍÑ•Á`€ô5…Ñ ¹5…à È°…É•„¹]¥‘Ñ €¼€ÌÔ¤ì(€€€€€€€€€€€¥¹ĞÍÑ•Ád€ô5…Ñ ¹5…à È°…É•„¹!•¥¡Ğ€¼€ÈÀ¤ì((€€€€€€€€€€€™½È€¡¥¹Ğä€ô…É•„¹Q½Àìä€ğ…É•„¹	½ÑÑ½´ìä€¬ôÍÑ•Ád¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€™½È€¡¥¹Ğà€ô…É•„¹1•™Ğìà€ğ…É•„¹I¥¡Ğìà€¬ôÍÑ•Á`¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€½±½ÈÁ¥á•°€ô¥µ…”¹•ÑA¥á•°¡à°ä¤ì(€€€€€€€€€€€€€€€€€€€É•‘Ì¹‘¡Á¥á•°¹H¤ì(€€€€€€€€€€€€€€€€€€€É••¹Ì¹‘¡Á¥á•°¹¤ì(€€€€€€€€€€€€€€€€€€€‰±Õ•Ì¹‘¡Á¥á•°¹¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡É•‘Ì¹½Õ¹Ğ€ôô€À¤É•ÑÕÉ¸½±½È¹É½µÉˆ ÈĞÔ°€ÈĞÔ°€ÈĞÔ¤ì(€€€€€€€€€€€É•‘Ì¹M½ÉĞ ¤ìÉ••¹Ì¹M½ÉĞ ¤ì‰±Õ•Ì¹M½ÉĞ ¤ì(€€€€€€€€€€€¥¹Ğµ¥‘‘±”€ôÉ•‘Ì¹½Õ¹Ğ€¼€Èì(€€€€€€€€€€€É•ÑÕÉ¸½±½È¹É½µÉˆ¡É•‘Ímµ¥‘‘±•t°É••¹Ímµ¥‘‘±•t°‰±Õ•Ímµ¥‘‘±•t¤ì(€€€€€€€ô((€€€€€€€ÁÉ½Ñ•Ñ•½Ù•ÉÉ¥‘”Ù½¥¥ÍÁ½Í”¡‰½½°‘¥ÍÁ½Í¥¹œ¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡‘¥ÍÁ½Í¥¹œ€˜˜±½Í•Q¥µ•È€„ô¹Õ±°¤±½Í•Q¥µ•È¹¥ÍÁ½Í” ¤ì(€€€€€€€€€€€‰…Í”¹¥ÍÁ½Í”¡‘¥ÍÁ½Í¥¹œ¤ì(€€€€€€€ô(€€€ô)ô
+            if (String.IsNullOrWÛn¼ÚÚ$z{-®éÜj×"†f÷&Vw&÷VæE6×ÆW2¢¢„ÇVÖ–ææ6R†fW&vT&6¶w&÷VæB’âCò6öÆ÷"äg&öÔ&v"ƒ#‚Â3Â3B’¢6öÆ÷"åv†—FR“°¢F÷V&ÆR6öçG&7BÒÖF‚ä'2„ÇVÖ–ææ6R†f÷&Vw&÷VæB’ÒÇVÖ–ææ6R†fW&vT&6¶w&÷VæB’“°¢–b†6öçG&7BÂs’f÷&Vw&÷VæBÒÇVÖ–ææ6R†fW&vT&6¶w&÷VæB’âCò6öÆ÷"äg&öÔ&v"ƒ#RÂ#rÂ3’¢6öÆ÷"åv†—FS° ¢&WGW&âæWrFW‡E7G–ÆP¢°¢f÷&Vw&÷VæBÒf÷&Vw&÷VæBÀ¢6ö×ÆW†—G’ÒfW&vT6ö×ÆW†—G’À¢&öÆBÒv÷&D&Vâbb†F÷V&ÆR–6æF–FFT6÷VçBòv÷&D&Vâã¢Ó°¢Ğ ¢&—fFR7FF–2Æ—7CÄ6öÆ÷#â6×ÆT&÷&FW"„&—FÖ6÷W&6RÂ&V7FævÆR&V7FævÆRÂ–çBF†–6¶æW72¢°¢&V7FævÆR÷WFW"Ò&V7FævÆRä–çFW'6V7B†æWr&V7FævÆR…ö–çBäV×G’Â6÷W&6Rå6—¦R’Â&V7FævÆRä–æfÆFR‡&V7FævÆRÂF†–6¶æW72ÂF†–6¶æW72’“°¢Æ—7CÄ6öÆ÷#â6öÆ÷'2ÒæWrÆ—7CÄ6öÆ÷#â‚“°¢–çB7FWÒÖF‚äÖ‚ƒÂÖF‚äÖ–â†÷WFW"åv–GF‚Â÷WFW"ä†V–v‡B’ò#B“°¢f÷"†–çB‚Ò÷WFW"äÆVgC²‚Â÷WFW"å&–v‡C²‚³Ò7FW¢°¢f÷"†–çBöfg6WBÒ²öfg6WBÂF†–6¶æW73²öfg6WB²²¢°¢–çBF÷ÒÖF‚äÖ–â†÷WFW"ä&÷GFöÒÒÂ÷WFW"åF÷²öfg6WB“°¢–çB&÷GFöÒÒÖF‚äÖ‚†÷WFW"åF÷Â÷WFW"ä&÷GFöÒÒÒöfg6WB“°¢6öÆ÷'2äFB‡6÷W&6RävWE—†VÂ‡‚ÂF÷’“°¢6öÆ÷'2äFB‡6÷W&6RävWE—†VÂ‡‚Â&÷GFöÒ’“°¢Ğ¢Ğ¢f÷"†–çB’Ò÷WFW"åF÷²’Â÷WFW"ä&÷GFöÓ²’³Ò7FW¢°¢f÷"†–çBöfg6WBÒ²öfg6WBÂF†–6¶æW73²öfg6WB²²¢°¢–çBÆVgBÒÖF‚äÖ–â†÷WFW"å&–v‡BÒÂ÷WFW"äÆVgB²öfg6WB“°¢–çB&–v‡BÒÖF‚äÖ‚†÷WFW"äÆVgBÂ÷WFW"å&–v‡BÒÒöfg6WB“°¢6öÆ÷'2äFB‡6÷W&6RävWE—†VÂ†ÆVgBÂ’’“°¢6öÆ÷'2äFB‡6÷W&6RävWE—†VÂ‡&–v‡BÂ’’“°¢Ğ¢Ğ¢&WGW&â6öÆ÷'3°¢Ğ ¢&—fFR7FF–2fö–BW‡æE6Öö÷F„Æ–æTÖ6²„&—FÖ6÷W&6RÂ&V7FævÆR&Vv–öâÂÆ—7CÅ&V7FævÆSâÆ–æT&÷VæG2À¢&ööÅ²ÅÒÖ6²ÂÆ—7CÄ6öÆ÷#âf÷&Vw&÷VæE6×ÆW2ÂÆ—7CÄ6öÆ÷#â&6¶w&÷VæE6×ÆW2¢°¢&V7FævÆR–ÖvT&÷VæG2ÒæWr&V7FævÆR…ö–çBäV×G’Â6÷W&6Rå6—¦R“°¢f÷&V6‚…&V7FævÆR&tÆ–æR–âÆ–æT&÷VæG2¢°¢–çB†÷&—¦öçFÅFF–ærÒÖF‚äÖ‚ƒbÂ&tÆ–æRä†V–v‡B“°¢–çBfW'F–6ÅFF–ærÒÖF‚äÖ‚ƒ2Â&tÆ–æRä†V–v‡BòB“°¢&V7FævÆR66âÒ&V7FævÆRä–çFW'6V7B†–ÖvT&÷VæG2Â&V7FævÆRä–æfÆFR‡&tÆ–æRÂ†÷&—¦öçFÅFF–ærÂfW'F–6ÅFF–ær’“°¢66âÒ&V7FævÆRä–çFW'6V7B‡66âÂ&Vv–öâ“°¢–b‡66âåv–GF‚Â"ÇÂ66âä†V–v‡BÂ"’6öçF–çVS°¢Æ—7CÄ6öÆ÷#â&÷&FW"Ò6×ÆT&÷&FW"‡6÷W&6RÂ66âÂ2“°¢6öÆ÷"&6¶w&÷VæBÒÖVF–ä6öÆ÷"†&÷&FW"“°¢F÷V&ÆR&6¶w&÷VæDÇVÖ–ææ6RÒÇVÖ–ææ6R†&6¶w&÷VæB“°¢F÷V&ÆRf&–F–öâÒ&÷&FW"ä6÷VçBÓÒò¢&÷&FW"äfW&vR†FVÆVvFR„6öÆ÷"6öÆ÷"’²&WGW&âÖF‚ä'2„ÇVÖ–ææ6R†6öÆ÷"’Ò&6¶w&÷VæDÇVÖ–ææ6R“²Ò“°¢–b‡f&–F–öââ#‚’6öçF–çVS°¢&6¶w&÷VæE6×ÆW2äFE&ævR†&÷&FW"“°¢F÷V&ÆRF‡&W6†öÆBÒÖF‚äÖ‚ƒ’ÂÖF‚äÖ–âƒc"Â#²f&–F–öâ¢ã‚’“° ¢f÷"†–çB’Ò66âåF÷²’Â66âä&÷GFöÓ²’²²¢f÷"†–çB‚Ò66âäÆVgC²‚Â66âå&–v‡C²‚²²¢°¢6öÆ÷"—†VÂÒ6÷W&6RävWE—†VÂ‡‚Â’“°¢F÷V&ÆRÇVÖ–ææ6TF–ffW&Væ6RÒÖF‚ä'2„ÇVÖ–ææ6R‡—†VÂ’Ò&6¶w&÷VæDÇVÖ–ææ6R“°¢F÷V&ÆR6öÆ÷$F–ffW&Væ6RÒ6öÆ÷$F—7Fæ6R‡—†VÂÂ&6¶w&÷VæB“°¢–b†ÇVÖ–ææ6TF–ffW&Væ6RãÒF‡&W6†öÆBÇÂ6öÆ÷$F–ffW&Væ6RãÒF‡&W6†öÆB¢ãCR¢°¢–çBÆö6Å‚Ò‚Ò&Vv–öâäÆVgC°¢–çBÆö6Å’Ò’Ò&Vv–öâåF÷°¢–b†Æö6Å‚ãÒbbÆö6Å’ãÒbbÆö6Å‚Â&Vv–öâåv–GF‚bbÆö6Å’Â&Vv–öâä†V–v‡B¢°¢Ö6µ¶Æö6Å‚ÂÆö6Å•ÒÒG'VS°¢f÷&Vw&÷VæE6×ÆW2äFB‡—†VÂ“°¢Ğ¢Ğ¢Ğ¢Ğ¢Ğ ¢&—fFR7FF–2fö–BF–ÆFR†&ööÅ²ÅÒÖ6²Â–çBv–GF‚Â–çB†V–v‡BÂ–çB&F—W2¢°¢&ööÅ²ÅÒ÷&–v–æÂÒ†&ööÅ²ÅÒ–Ö6²ä6ÆöæR‚“°¢f÷"†–çB’Ò²’Â†V–v‡C²’²²¢°¢f÷"†–çB‚Ò²‚Âv–GFƒ²‚²²¢°¢–b‚÷&–v–æÅ·‚Â•Ò’6öçF–çVS°¢f÷"†–çBöfg6WE’Ò×&F—W3²öfg6WE’ÃÒ&F—W3²öfg6WE’²²¢f÷"†–çBöfg6WE‚Ò×&F—W3²öfg6WE‚ÃÒ&F—W3²öfg6WE‚²²¢°¢–çBF&vWE‚Ò‚²öfg6WEƒ°¢–çBF&vWE’Ò’²öfg6WE“°¢–b‡F&vWE‚ãÒbbF&vWE’ãÒbbF&vWE‚Âv–GF‚bbF&vWE’Â†V–v‡B’Ö6µ·F&vWE‚ÂF&vWE•ÒÒG'VS°¢Ğ¢Ğ¢Ğ¢Ğ ¢&—fFR7FF–2fö–B&W7F÷&UFW‡E—†VÇ2„&—FÖ6÷W&6RÂ&—FÖ&W7VÇBÂ&V7FævÆR&Vv–öâÂ&ööÅ²ÅÒÖ6²¢°¢f÷"†–çB’Ò²’Â&Vv–öâä†V–v‡C²’²²¢f÷"†–çB‚Ò²‚Â&Vv–öâåv–GFƒ²‚²²¢–b†Ö6µ·‚Â•Ò’&W7VÇBå6WE—†VÂ‡&Vv–öâäÆVgB²‚Â&Vv–öâåF÷²’Â&WÆ6VÖVçD6öÆ÷"‡6÷W&6RÂ&Vv–öâÂÖ6²Â‚Â’’“°¢Ğ ¢&—fFR7FF–26öÆ÷"&WÆ6VÖVçD6öÆ÷"„&—FÖ6÷W&6RÂ&V7FævÆR&Vv–öâÂ&ööÅ²ÅÒÖ6²Â–çBÆö6Å‚Â–çBÆö6Å’¢°¢–çE²ÅÒF—&V7F–öç2Ò²²ÓÂÒÂ²ÂÒÂ²ÂÓÒÂ²ÂÒÂ²ÓÂÓÒÂ²ÂÓÒÂ²ÓÂÒÂ²ÂÒÓ°¢F÷V&ÆR&VBÒÂw&VVâÒÂ&ÇVRÒÂvV–v‡E7VÒÒ°¢f÷"†–çBF—&V7F–öâÒ²F—&V7F–öâÂF—&V7F–öç2ävWDÆVæwF‚ƒ“²F—&V7F–öâ²²¢°¢f÷"†–çBF—7Fæ6RÒ²F—7Fæ6RÃÒƒ²F—7Fæ6R²²¢°¢–çB‚ÒÆö6Å‚²F—&V7F–öç5¶F—&V7F–öâÂÒ¢F—7Fæ6S°¢–çB’ÒÆö6Å’²F—&V7F–öç5¶F—&V7F–öâÂÒ¢F—7Fæ6S°¢–b‡‚ÂÇÂ’ÂÇÂ‚ãÒ&Vv–öâåv–GF‚ÇÂ’ãÒ&Vv–öâä†V–v‡B’'&V³°¢–b†Ö6µ·‚Â•Ò’6öçF–çVS°¢6öÆ÷"6×ÆRÒ6÷W&6RävWE—†VÂ‡&Vv–öâäÆVgB²‚Â&Vv–öâåF÷²’“°¢F÷V&ÆRvV–v‡BÒãòF—7Fæ6S°¢&VB³Ò6×ÆRå"¢vV–v‡C°¢w&VVâ³Ò6×ÆRär¢vV–v‡C°¢&ÇVR³Ò6×ÆRä"¢vV–v‡C°¢vV–v‡E7VÒ³ÒvV–v‡C°¢'&V³°¢Ğ¢Ğ¢–b‡vV–v‡E7VÒÃÒ’&WGW&â6÷W&6RävWE—†VÂ‡&Vv–öâäÆVgB²Æö6Å‚Â&Vv–öâåF÷²Æö6Å’“°¢&WGW&â6öÆ÷"äg&öÔ&v"ƒ#SRÂ6Æ×6öÆ÷"‡&VBòvV–v‡E7VÒ’Â6Æ×6öÆ÷"†w&VVâòvV–v‡E7VÒ’Â6Æ×6öÆ÷"†&ÇVRòvV–v‡E7VÒ’“°¢Ğ ¢&—fFR7FF–2fö–BG&uG&ç6ÆF–öâ„w&†–72w&†–72Â6—¦R–ÖvU6—¦RÂö7$Æ–æT–æfòÆ–æRÂFW‡E7G–ÆR7G–ÆRÂ&V7FævÆR÷VU&Vv–öâ¢°¢&V7FævÆR–ÖvT&÷VæG2ÒæWr&V7FævÆR…ö–çBäV×G’Â–ÖvU6—¦R“°¢–çB6÷W&6TÆ–æW2Ò6÷VçE6÷W&6TÆ–æW2†Æ–æRåv÷&D&÷VæG2ÂÆ–æRä&÷VæG2ä†V–v‡B“°¢–çB6÷W&6TÆ–æT†V–v‡BÒÖF‚äÖ‚ƒ"ÂÆ–æRä&÷VæG2ä†V–v‡BòÖF‚äÖ‚ƒÂ6÷W&6TÆ–æW2’“°¢&V7FævÆRFW‡D&VÒ&V7FævÆRä–çFW'6V7B†–ÖvT&÷VæG2À¢æWr&V7FævÆR„ÖF‚äÖ‚ƒÂÆ–æRä&÷VæG2äÆVgBÒ"’ÂÖF‚äÖ‚ƒÂÆ–æRä&÷VæG2åF÷Ò"’À¢ÖF‚äÖ–â†–ÖvU6—¦Råv–GF‚ÒÖF‚äÖ‚ƒÂÆ–æRä&÷VæG2äÆVgBÒ"’ÂÆ–æRä&÷VæG2åv–GF‚²‚’À¢ÖF‚äÖ–â†–ÖvU6—¦Rä†V–v‡BÒÖF‚äÖ‚ƒÂÆ–æRä&÷VæG2åF÷Ò"’ÂÖF‚äÖ‚†Æ–æRä&÷VæG2ä†V–v‡B²bÂ†–çB’‡6÷W&6TÆ–æT†V–v‡B¢6÷W&6TÆ–æW2¢ãR’’’’“°¢&V7FævÆR6fU&Vv–öâÒ&V7FævÆRä–æfÆFR†÷VU&Vv–öâÂÓ"ÂÓ"“°¢FW‡D&VÒ&V7FævÆRä–çFW'6V7B‡FW‡D&VÂ6fU&Vv–öâ“°¢–b‡FW‡D&Våv–GF‚ÂBÇÂFW‡D&Vä†V–v‡BÂB’&WGW&ã° ¢7G&–ærföçDæÖRÒ6÷W&6TÆ–æT†V–v‡BãÒ#rò$vV÷&v–"¢%6VvöRT’#°¢föçE7G–ÆRföçE7G–ÆRÒ7G–ÆRä&öÆBòföçE7G–ÆRä&öÆB¢föçE7G–ÆRå&VwVÆ#°¢7—7FVÒäG&v–æräG&v–æs$Bäw&†–757FFRw&†–757FFRÒw&†–72å6fR‚“°¢w&†–72å6WD6Æ—‡6fU&Vv–öâ“°¢W6–ær…7G&–ætf÷&ÖBf÷&ÖBÒæWr7G&–ætf÷&ÖB‚’¢°¢f÷&ÖBäÆ–væÖVçBÒ7G&–ætÆ–væÖVçBäæV#°¢f÷&ÖBäÆ–æTÆ–væÖVçBÒ7G&–ætÆ–væÖVçBäæV#°¢f÷&ÖBåG&–ÖÖ–ærÒ7G&–æuG&–ÖÖ–æräVÆÆ—6—5v÷&C°¢f÷&ÖBäf÷&ÖDfÆw2Ò7G&–ætf÷&ÖDfÆw2äÆ–æTÆ–Ö—C°¢fÆöBföçE6—¦RÒf—DföçB†w&†–72ÂÆ–æRåG&ç6ÆF–öâÂFW‡D&Vå6—¦RÂföçDæÖRÂföçE7G–ÆRÂÖF‚äÖ–âƒcBÂ6÷W&6TÆ–æT†V–v‡B¢ãVb’Âf÷&ÖB“°¢W6–ær„föçBföçBÒæWrföçB†föçDæÖRÂföçE6—¦RÂföçE7G–ÆRÂw&†–75Væ—Bå—†VÂ’¢°¢–b‡7G–ÆRä6ö×ÆW†—G’â‚¢°¢6öÆ÷"÷WFÆ–æT6öÆ÷"ÒÇVÖ–ææ6R‡7G–ÆRäf÷&Vw&÷VæB’âCò6öÆ÷"äg&öÔ&v"ƒSRÂÂÂ’¢6öÆ÷"äg&öÔ&v"ƒSRÂ#SRÂ#SRÂ#SR“°¢W6–ær„''W6‚÷WFÆ–æRÒæWr6öÆ–D''W6‚†÷WFÆ–æT6öÆ÷"’¢°¢w&†–72äG&u7G&–ær†Æ–æRåG&ç6ÆF–öâÂföçBÂ÷WFÆ–æRÂæWr&V7FævÆTb‡FW‡D&Vå‚ÒÂFW‡D&Vå’ÂFW‡D&Våv–GF‚ÂFW‡D&Vä†V–v‡B’Âf÷&ÖB“°¢w&†–72äG&u7G&–ær†Æ–æRåG&ç6ÆF–öâÂföçBÂ÷WFÆ–æRÂæWr&V7FævÆTb‡FW‡D&Vå‚²ÂFW‡D&Vå’ÂFW‡D&Våv–GF‚ÂFW‡D&Vä†V–v‡B’Âf÷&ÖB“°¢w&†–72äG&u7G&–ær†Æ–æRåG&ç6ÆF–öâÂföçBÂ÷WFÆ–æRÂæWr&V7FævÆTb‡FW‡D&Vå‚ÂFW‡D&Vå’ÒÂFW‡D&Våv–GF‚ÂFW‡D&Vä†V–v‡B’Âf÷&ÖB“°¢w&†–72äG&u7G&–ær†Æ–æRåG&ç6ÆF–öâÂföçBÂ÷WFÆ–æRÂæWr&V7FævÆTb‡FW‡D&Vå‚ÂFW‡D&Vå’²ÂFW‡D&Våv–GF‚ÂFW‡D&Vä†V–v‡B’Âf÷&ÖB“°¢Ğ¢Ğ¢W6–ær„''W6‚f÷&Vw&÷VæBÒæWr6öÆ–D''W6‚‡7G–ÆRäf÷&Vw&÷VæB’¢w&†–72äG&u7G&–ær†Æ–æRåG&ç6ÆF–öâÂföçBÂf÷&Vw&÷VæBÂFW‡D&VÂf÷&ÖB“°¢Ğ¢Ğ¢w&†–72å&W7F÷&R†w&†–757FFR“°¢Ğ ¢&—fFR7FF–2fÆöBf—DföçB„w&†–72w&†–72Â7G&–ærFW‡BÂ6—¦R&VÂ7G&–ærföçDæÖRÂföçE7G–ÆR7G–ÆRÂfÆöBÖ†–×VÒÂ7G&–ætf÷&ÖBf÷&ÖB¢°¢fÆöBÆ÷rÒvc°¢fÆöB†–v‚ÒÖF‚äÖ‚†Æ÷rÂÖ†–×VÒ“°¢f÷"†–çB—FW&F–öâÒ²—FW&F–öâÂ“²—FW&F–öâ²²¢°¢fÆöBÖ–FFÆRÒ†Æ÷r²†–v‚’ò&c°¢W6–ær„föçBföçBÒæWrföçB†föçDæÖRÂÖ–FFÆRÂ7G–ÆRÂw&†–75Væ—Bå—†VÂ’¢°¢6—¦TbÖV7W&VBÒw&†–72äÖV7W&U7G&–ær‡FW‡BÂföçBÂÖF‚äÖ‚ƒBÂ&Våv–GF‚’Âf÷&ÖB“°¢–b†ÖV7W&VBåv–GF‚ÃÒ&Våv–GF‚²bbÖV7W&VBä†V–v‡BÃÒ&Vä†V–v‡B²’Æ÷rÒÖ–FFÆS°¢VÇ6R†–v‚ÒÖ–FFÆS°¢Ğ¢Ğ¢&WGW&âÖF‚äÖ‚ƒvbÂÆ÷r“°¢Ğ ¢&—fFR7FF–2–çB6÷VçE6÷W&6TÆ–æW2„Æ—7CÅ&V7FævÆSâv÷&G2Â–çBfÆÆ&6´†V–v‡B¢°¢–b‡v÷&G2ÓÒçVÆÂÇÂv÷&G2ä6÷VçBÓÒ’&WGW&â°¢Æ—7CÆ–çCâ6VçFW'2Òv÷&G2å6VÆV7B†FVÆVvFR…&V7FævÆRv÷&B’²&WGW&âv÷&BåF÷²v÷&Bä†V–v‡Bò#²Ò’ä÷&FW$'’†FVÆVvFR†–çBfÇVR’²&WGW&âfÇVS²Ò’åFôÆ—7B‚“°¢–çBFöÆW&æ6RÒÖF‚äÖ‚ƒBÂv÷&G2å6VÆV7B†FVÆVvFR…&V7FævÆRv÷&B’²&WGW&âv÷&Bä†V–v‡C²Ò’ä÷&FW$'’†FVÆVvFR†–çBfÇVR’²&WGW&âfÇVS²Ò’äVÆVÖVçDB‡v÷&G2ä6÷VçBò"’ò"“°¢–çBÆ–æW2Ò°¢–çBÆ7D6VçFW"Ò–çC3"äÖ–åfÇVS°¢f÷&V6‚†–çB6VçFW"–â6VçFW'2¢°¢–b†Æ7D6VçFW"ÓÒ–çC3"äÖ–åfÇVRÇÂ6VçFW"ÒÆ7D6VçFW"âFöÆW&æ6R¢°¢Æ–æW2²³°¢Æ7D6VçFW"Ò6VçFW#°¢Ğ¢Ğ¢&WGW&âÖF‚äÖ‚ƒÂÆ–æW2“°¢Ğ ¢&—fFR7FF–26öÆ÷"ÖVF–ä6öÆ÷"„Æ—7CÄ6öÆ÷#â6öÆ÷'2¢°¢–b†6öÆ÷'2ÓÒçVÆÂÇÂ6öÆ÷'2ä6÷VçBÓÒ’&WGW&â6öÆ÷"äg&öÔ&v"ƒ#CRÂ#CRÂ#CR“°¢–çEµÒ&VG2Ò6öÆ÷'2å6VÆV7B†FVÆVvFR„6öÆ÷"6öÆ÷"’²&WGW&â†–çB–6öÆ÷"å#²Ò’ä÷&FW$'’†FVÆVvFR†–çBfÇVR’²&WGW&âfÇVS²Ò’åFô'&’‚“°¢–çEµÒw&VVç2Ò6öÆ÷'2å6VÆV7B†FVÆVvFR„6öÆ÷"6öÆ÷"’²&WGW&â†–çB–6öÆ÷"äs²Ò’ä÷&FW$'’†FVÆVvFR†–çBfÇVR’²&WGW&âfÇVS²Ò’åFô'&’‚“°¢–çEµÒ&ÇVW2Ò6öÆ÷'2å6VÆV7B†FVÆVvFR„6öÆ÷"6öÆ÷"’²&WGW&â†–çB–6öÆ÷"ä#²Ò’ä÷&FW$'’†FVÆVvFR†–çBfÇVR’²&WGW&âfÇVS²Ò’åFô'&’‚“°¢–çBÖ–FFÆRÒ6öÆ÷'2ä6÷VçBò#°¢&WGW&â6öÆ÷"äg&öÔ&v"‡&VG5¶Ö–FFÆUÒÂw&VVç5¶Ö–FFÆUÒÂ&ÇVW5¶Ö–FFÆUÒ“°¢Ğ ¢&—fFR7FF–2F÷V&ÆRÇVÖ–ææ6R„6öÆ÷"6öÆ÷"¢°¢&WGW&â6öÆ÷"å"¢ã#“’²6öÆ÷"är¢ãSƒr²6öÆ÷"ä"¢ãC°¢Ğ ¢&—fFR7FF–2F÷V&ÆR6öÆ÷$F—7Fæ6R„6öÆ÷"f—'7BÂ6öÆ÷"6V6öæB¢°¢–çB&VBÒf—'7Bå"Ò6V6öæBå#°¢–çBw&VVâÒf—'7BärÒ6V6öæBäs°¢–çB&ÇVRÒf—'7Bä"Ò6V6öæBä#°¢&WGW&âÖF‚å7'B‡&VB¢&VB²w&VVâ¢w&VVâ²&ÇVR¢&ÇVR“°¢Ğ ¢&—fFR7FF–2–çB6Æ×6öÆ÷"†F÷V&ÆRfÇVR¢°¢&WGW&âÖF‚äÖ‚ƒÂÖF‚äÖ–âƒ#SRÂ†–çB”ÖF‚å&÷VæB‡fÇVR’’“°¢Ğ¢Ğ ¢–çFW&æÂ6VÆVB6Æ72÷fW&Æ”f÷&Ò¢f÷&Ğ¢°¢&—fFR6öç7B–çBw4W…G&ç7&VçBÒƒ#°¢&—fFR6öç7B–çBw4W…FööÅv–æF÷rÒƒƒ°¢&—fFR6öç7B–çBw4W„æô7F—fFRÒƒƒ°¢&—fFR&VFöæÇ’F–ÖW"6Æ÷6UF–ÖW#°¢&—fFR&VFöæÇ’&—FÖ&VæFW&VD÷fW&Æ“° ¢V&Æ–2÷fW&Æ”f÷&Ò…&V7FævÆR67&VVä&VÂ”VçVÖW&&ÆSÄö7$Æ–æT–æfóâÆ–æW2Â&—FÖ6GW&VD–ÖvRÂ–çB6V6öæG2¢°¢7F'E÷6—F–öâÒf÷&Õ7F'E÷6—F–öâäÖçVÃ°¢&÷VæG2Ò67&VVä&V°¢f÷&Ô&÷&FW%7G–ÆRÒf÷&Ô&÷&FW%7G–ÆRäæöæS°¢6†÷t–åF6¶&"ÒfÇ6S°¢F÷Ö÷7BÒG'VS°¢&6´6öÆ÷"Ò6öÆ÷"äÖvVçF°¢G&ç7&Væ7”¶W’Ò6öÆ÷"äÖvVçF°¢F÷V&ÆT'VffW&VBÒG'VS° ¢&VæFW&VD÷fW&Æ’Ò÷fW&Æ•&VæFW&W"å&VæFW"†6GW&VD–ÖvRÂÆ–æW2“° ¢6Æ÷6UF–ÖW"ÒæWrF–ÖW"‚“°¢6Æ÷6UF–ÖW"ä–çFW'fÂÒ6V6öæG2¢°¢6Æ÷6UF–ÖW"åF–6²³ÒFVÆVvFR²6Æ÷6R‚“²Ó°¢6Æ÷6UF–ÖW"å7F'B‚“°¢Ğ ¢&÷FV7FVB÷fW'&–FR&ööÂ6†÷uv—F†÷WD7F—fF–öâ²vWB²&WGW&âG'VS²ÒĞ ¢&÷FV7FVB÷fW'&–FR7&VFU&×27&VFU&×0¢°¢vW@¢°¢7&VFU&×2&ÖWFW'2Ò&6Rä7&VFU&×3°¢&ÖWFW'2äW…7G–ÆRÃÒw4W…G&ç7&VçBÂw4W…FööÅv–æF÷rÂw4W„æô7F—fFS°¢&WGW&â&ÖWFW'3°¢Ğ¢Ğ ¢&÷FV7FVB÷fW'&–FRfö–Böå–çB…–çDWfVçD&w2R¢°¢&6Räöå–çB†R“°¢–b‡&VæFW&VD÷fW&Æ’ÒçVÆÂ’Räw&†–72äG&t–ÖvUVç66ÆVB‡&VæFW&VD÷fW&Æ’Âö–çBäV×G’“°¢Ğ ¢&÷FV7FVB÷fW'&–FRfö–BF—7÷6R†&ööÂF—7÷6–ær¢°¢–b†F—7÷6–ær¢°¢–b†6Æ÷6UF–ÖW"ÒçVÆÂ’6Æ÷6UF–ÖW"äF—7÷6R‚“°¢–b‡&VæFW&VD÷fW&Æ’ÒçVÆÂ’&VæFW&VD÷fW&Æ’äF—7÷6R‚“°¢Ğ¢&6RäF—7÷6R†F—7÷6–ær“°¢Ğ¢Ğ§Ğ

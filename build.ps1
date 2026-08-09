@@ -22,6 +22,7 @@ New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
     /reference:System.Core.dll `
     /reference:System.Drawing.dll `
     /reference:System.Net.Http.dll `
+    /reference:System.Security.dll `
     /reference:System.Web.Extensions.dll `
     /reference:System.Windows.Forms.dll `
     /reference:C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.dll `
