@@ -13,6 +13,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
@@ -21,8 +22,8 @@ using Windows.Storage.Streams;
 [assembly: System.Reflection.AssemblyTitle("ScreenLingo")]
 [assembly: System.Reflection.AssemblyDescription("Screen area OCR translator for Windows")]
 [assembly: System.Reflection.AssemblyProduct("ScreenLingo")]
-[assembly: System.Reflection.AssemblyVersion("0.9.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.9.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.9.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.9.1.0")]
 
 namespace ScreenLingo
 {
@@ -123,6 +124,9 @@ namespace ScreenLingo
                     bool protectedSettings = AppSettings.TestProtectionRoundTrip("screenlingo-test-key");
                     log.AppendLine("SETTINGS_DPAPI=" + protectedSettings);
                     if (!protectedSettings) throw new InvalidOperationException("Self-test settings encryption failed.");
+                    string startupCommand = StartupRegistration.Command(@"C:\Apps\ScreenLingo.exe");
+                    log.AppendLine("STARTUP_COMMAND=" + startupCommand);
+                    if (startupCommand != "\"C:\\Apps\\ScreenLingo.exe\" --tray") throw new InvalidOperationException("Startup command is invalid.");
                     List<OcrLineInfo> paragraphSample = new List<OcrLineInfo>
                     {
                         new OcrLineInfo { Text = "Mike is ten. He is a schoolboy.", Bounds = new Rectangle(10, 10, 420, 36) },
@@ -162,6 +166,39 @@ namespace ScreenLingo
                 log.AppendLine(ex.ToString());
             }
             File.WriteAllText(logPath, log.ToString(), Encoding.UTF8);
+        }
+    }
+
+    internal static class StartupRegistration
+    {
+        private const string KeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string ValueName = "ScreenLingo";
+
+        internal static string Command(string executable)
+        {
+            return "\"" + executable + "\" --tray";
+        }
+
+        internal static bool Enabled()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(KeyPath, false))
+                {
+                    string value = key == null ? null : key.GetValue(ValueName) as string;
+                    return String.Equals(value, Command(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch { return false; }
+        }
+
+        internal static void Set(bool enabled)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(KeyPath))
+            {
+                if (enabled) key.SetValue(ValueName, Command(Application.ExecutablePath), RegistryValueKind.String);
+                else key.DeleteValue(ValueName, false);
+            }
         }
     }
 
@@ -676,13 +713,29 @@ namespace ScreenLingo
                 try
                 {
                     settings.Save();
-                    lastWatchText = String.Empty;
-                    trayIcon.ShowBalloonTip(2200, "Настройки сохранены", form.SelectedProvider + " · язык: " + form.SelectedLanguageName, ToolTipIcon.Info);
                 }
                 catch (Exception ex)
                 {
                     trayIcon.ShowBalloonTip(5000, "Не удалось сохранить настройки", FriendlyError(ex), ToolTipIcon.Error);
+                    return;
                 }
+
+                try
+                {
+                    if (form.StartWithWindows != StartupRegistration.Enabled())
+                        StartupRegistration.Set(form.StartWithWindows);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(
+                        "Остальные настройки сохранены, но не удалось изменить автозапуск:\n" + FriendlyError(ex),
+                        "ScreenLingo",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+
+                lastWatchText = String.Empty;
+                trayIcon.ShowBalloonTip(2200, "Настройки сохранены", form.SelectedProvider + " · язык: " + form.SelectedLanguageName, ToolTipIcon.Info);
             }
         }
 
@@ -878,6 +931,7 @@ namespace ScreenLingo
         private readonly TextBox watchHotkeyBox;
         private readonly NumericUpDown overlaySecondsBox;
         private readonly NumericUpDown watchIntervalBox;
+        private readonly CheckBox startWithWindowsBox;
 
         public string SelectedSourceLanguageCode { get { return ((LanguageOption)sourceLanguageBox.SelectedItem).Code; } }
         public string SelectedLanguageCode { get { return ((LanguageOption)languageBox.SelectedItem).Code; } }
@@ -893,6 +947,7 @@ namespace ScreenLingo
         public string WatchHotkey { get { return watchHotkeyBox.Text; } }
         public int OverlaySeconds { get { return (int)overlaySecondsBox.Value; } }
         public int WatchIntervalMs { get { return (int)(watchIntervalBox.Value * 1000); } }
+        public bool StartWithWindows { get { return startWithWindowsBox.Checked; } }
 
         public SettingsForm(AppSettings settings)
         {
@@ -982,6 +1037,15 @@ namespace ScreenLingo
             decimal intervalSeconds = Math.Max(0.75m, Math.Min(30m, settings.WatchIntervalMs / 1000m));
             watchIntervalBox = new NumericUpDown { Location = new Point(350, 336), Size = new Size(125, 28), DecimalPlaces = 2, Increment = 0.25m, Minimum = 0.75m, Maximum = 30m, Value = intervalSeconds };
             controlsPage.Controls.Add(watchIntervalBox);
+
+            startWithWindowsBox = new CheckBox
+            {
+                Text = "Запускать вместе с Windows · сразу в трее",
+                Location = new Point(27, 392),
+                Size = new Size(448, 32),
+                Checked = StartupRegistration.Enabled()
+            };
+            controlsPage.Controls.Add(startWithWindowsBox);
 
             Button saveButton = new Button { Text = "Сохранить", DialogResult = DialogResult.OK, Size = new Size(120, 36), Location = new Point(424, 562), BackColor = Color.FromArgb(77, 112, 245), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
             saveButton.FlatAppearance.BorderSize = 0;
