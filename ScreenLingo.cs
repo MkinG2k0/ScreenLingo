@@ -22,8 +22,8 @@ using Windows.Storage.Streams;
 [assembly: System.Reflection.AssemblyTitle("ScreenLingo")]
 [assembly: System.Reflection.AssemblyDescription("Screen area OCR translator for Windows")]
 [assembly: System.Reflection.AssemblyProduct("ScreenLingo")]
-[assembly: System.Reflection.AssemblyVersion("0.9.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.9.1.0")]
+[assembly: System.Reflection.AssemblyVersion("0.9.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.9.2.0")]
 
 namespace ScreenLingo
 {
@@ -1173,11 +1173,20 @@ namespace ScreenLingo
 
     internal sealed class SelectionForm : Form
     {
+        private const int EscapeHotkeyId = 201;
+        private const int WmHotkey = 0x0312;
         private readonly Bitmap frozenScreen;
         private Point start;
         private Point current;
         private bool selecting;
+        private bool escapeHotkeyRegistered;
         public Rectangle SelectedScreenRectangle { get; private set; }
+
+        [DllImport("user32.dll")]
+        private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
+
+        [DllImport("user32.dll")]
+        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
         public SelectionForm()
         {
@@ -1198,14 +1207,48 @@ namespace ScreenLingo
             current = new Point(Cursor.Position.X - virtualScreen.Left, Cursor.Position.Y - virtualScreen.Top);
         }
 
-        protected override void OnKeyDown(KeyEventArgs e)
+        protected override void OnShown(EventArgs e)
         {
-            if (e.KeyCode == Keys.Escape)
+            base.OnShown(e);
+            Activate();
+            Focus();
+            escapeHotkeyRegistered = RegisterHotKey(Handle, EscapeHotkeyId, 0, (uint)Keys.Escape);
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if ((keyData & Keys.KeyCode) == Keys.Escape)
             {
-                DialogResult = DialogResult.Cancel;
-                Close();
+                CancelSelection();
+                return true;
             }
-            base.OnKeyDown(e);
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == WmHotkey && message.WParam.ToInt32() == EscapeHotkeyId)
+            {
+                CancelSelection();
+                return;
+            }
+            base.WndProc(ref message);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            if (escapeHotkeyRegistered)
+            {
+                UnregisterHotKey(Handle, EscapeHotkeyId);
+                escapeHotkeyRegistered = false;
+            }
+            base.OnFormClosed(e);
+        }
+
+        private void CancelSelection()
+        {
+            DialogResult = DialogResult.Cancel;
+            Close();
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
